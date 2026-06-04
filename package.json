@@ -1,0 +1,15 @@
+{
+  "name": "chess-openworld",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Open-world multiplayer chess MMO — colorful, data-driven, server-authoritative.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "license": "MIT"
+}
