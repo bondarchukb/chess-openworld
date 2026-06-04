@@ -58,6 +58,9 @@ export type ClientMessage =
   | { t: "move"; dx: number; dy: number } // step the avatar by one tile
   | { t: "place"; kind: Extract<EntityKind, "building" | "artifact">; skin?: string }
   | { t: "boardMove"; from: number; to: number } // move on the shared chess board
+  /** Tell the server where the camera is looking, so it streams interest there
+   * too (spectator panning). Cleared by sending a focus on the avatar. */
+  | { t: "focus"; x: number; y: number }
   | { t: "chat"; text: string }
   | { t: "ping" };
 

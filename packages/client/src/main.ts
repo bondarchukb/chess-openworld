@@ -24,9 +24,6 @@ import {
   tileColor,
 } from "./iso.js";
 
-/** How far (in tiles) the camera may roam from the avatar. Kept inside one
- * zone so it never leaves the guaranteed-loaded interest region. */
-const PAN_LIMIT = WORLD.zoneSize - 2;
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 2.2;
 
@@ -127,6 +124,7 @@ app.canvas.style.cursor = "grab";
 // ---- render loop -----------------------------------------------------------
 
 let groundKey = "";
+let lastFocus = { x: -1, y: -1 };
 
 app.ticker.add(() => {
   const self = conn.self;
@@ -137,9 +135,19 @@ app.ticker.add(() => {
     camera.cx += (self.x - camera.cx) * 0.2;
     camera.cy += (self.y - camera.cy) * 0.2;
   }
-  // Clamp to the loaded interest region (and the world edges).
-  camera.cx = clamp(camera.cx, Math.max(0, self.x - PAN_LIMIT), Math.min(WORLD.width - 1, self.x + PAN_LIMIT));
-  camera.cy = clamp(camera.cy, Math.max(0, self.y - PAN_LIMIT), Math.min(WORLD.height - 1, self.y + PAN_LIMIT));
+  // Clamp to the world edges. The server streams interest around our focus
+  // (sent below), so we can roam the whole map, not just the avatar's zone.
+  camera.cx = clamp(camera.cx, 0, WORLD.width - 1);
+  camera.cy = clamp(camera.cy, 0, WORLD.height - 1);
+
+  // Tell the server where we're looking so it streams entities there too.
+  // Throttled to whole-tile changes to avoid spamming the socket.
+  const fx = Math.round(camera.cx);
+  const fy = Math.round(camera.cy);
+  if (fx !== lastFocus.x || fy !== lastFocus.y) {
+    lastFocus = { x: fx, y: fy };
+    conn.send({ t: "focus", x: fx, y: fy });
+  }
 
   // Apply camera transform: scale by zoom, center the camera point on screen.
   const cam = isoToScreen(camera.cx, camera.cy);

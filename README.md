@@ -51,10 +51,13 @@ npm run start -w @chess-openworld/server
 npm run dev -w @chess-openworld/client
 ```
 
-Controls: **WASD / arrows** to walk the world · **B** place a building ·
-**F** place an artifact. Open two browser tabs to see real-time multiplayer
-sync and interest culling as you walk apart. The shared chess board sits at
-the center of the world — moves are validated server-side by the engine.
+Controls: **WASD / arrows** to walk · **drag** to roam the camera anywhere on
+the map · **scroll** to zoom · **C** to recenter on your avatar · **B** place a
+building · **F** place an artifact. Panning sends the server a *focus* point so
+it streams entities around wherever you're looking (spectator camera), not just
+your avatar. Open two browser tabs to see real-time multiplayer sync and
+interest culling as you walk apart. The shared chess board sits at the center
+of the world — moves are validated server-side by the engine.
 
 ## Test
 

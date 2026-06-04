@@ -57,6 +57,7 @@ class TestClient {
             e.x = m.x;
             e.y = m.y;
           }
+          if (m.id === this.selfId) this.selfPos = { x: m.x, y: m.y };
         }
         for (const id of msg.leave) this.known.delete(id);
         break;
@@ -132,14 +133,24 @@ async function main() {
     console.log("✓ legal board move applied + synced to nearby player");
     passed++;
 
+    // 4. Spectator focus: Bob is far from Alice and can't see her. He pans his
+    //    camera to her location; the server should stream her into his interest.
+    assert.ok(!bob.sees(alice.selfId), "precondition: Bob can't see far Alice");
+    bob.send({ t: "focus", x: alice.selfPos.x, y: alice.selfPos.y });
+    await sleep(300);
+    assert.ok(bob.sees(alice.selfId), "Bob should see Alice after focusing her area");
+    console.log("✓ spectator focus streams distant entities into interest");
+    passed++;
+
     alice.close();
     bob.close();
   } finally {
     await server.stop();
   }
 
-  console.log(`\n${passed}/4 integration checks passed`);
-  if (passed !== 4) process.exit(1);
+  const TOTAL = 5;
+  console.log(`\n${passed}/${TOTAL} integration checks passed`);
+  if (passed !== TOTAL) process.exit(1);
 }
 
 main().catch((err) => {

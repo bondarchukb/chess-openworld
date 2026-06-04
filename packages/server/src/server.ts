@@ -30,6 +30,9 @@ interface Session {
   /** What this client currently believes is in its interest set. */
   known: Map<EntityId, { x: number; y: number }>;
   lastBoardVersion: number;
+  /** Where the player's camera is looking, if panned away from the avatar.
+   * Interest is streamed around the avatar AND this point. */
+  focus: { x: number; y: number } | null;
 }
 
 export interface ServerOptions {
@@ -103,6 +106,7 @@ export class GameServer {
       name: player.label,
       known: new Map(),
       lastBoardVersion: -1,
+      focus: null,
     };
     this.sessions.add(session);
 
@@ -142,6 +146,16 @@ export class GameServer {
         if (!res.ok) send(session.socket, { t: "error", message: res.reason ?? "rejected" });
         break;
       }
+      case "focus": {
+        const p = this.world.getEntity(session.playerId);
+        // Drop the focus once it's basically back on the avatar (following).
+        if (p && Math.abs(msg.x - p.x) <= 1 && Math.abs(msg.y - p.y) <= 1) {
+          session.focus = null;
+        } else {
+          session.focus = { x: msg.x, y: msg.y };
+        }
+        break;
+      }
       case "chat": {
         this.broadcastNearby(session.playerId, { t: "chat", from: session.name, text: msg.text });
         break;
@@ -160,7 +174,10 @@ export class GameServer {
       const p = this.world.getEntity(session.playerId);
       if (!p) continue;
 
+      // Interest = zones around the avatar, plus zones around the camera focus
+      // when the player is panning/spectating elsewhere.
       const zones = interestZones(p.x, p.y);
+      if (session.focus) for (const z of interestZones(session.focus.x, session.focus.y)) zones.add(z);
       const current = this.world.entitiesInZones(zones);
       const currentById = new Map<EntityId, Entity>(current.map((e) => [e.id, e]));
 
