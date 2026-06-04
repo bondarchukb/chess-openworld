@@ -8,6 +8,11 @@ This repo is the **step-4 architecture vertical slice**: it runs, it's tested,
 and every load-bearing seam an MMO needs is present. It is a foundation to
 *harden into scale*, not a finished product.
 
+> 📖 **New here? Read [CONCEPTS.md](./CONCEPTS.md)** — a guided tour of every
+> idea in the game: the world, zones, interest management, the chess engine,
+> data-driven pieces and effects, seats, the camera, persistence, and how to
+> extend it. The rest of this file is about running and deploying.
+
 ## What's here
 
 ```
@@ -39,19 +44,70 @@ A custom "amazon" (queen + knight) is a few lines in a `PieceRegistry`, no engin
 changes. Skins are cosmetic-only and never touch rules, so the world can be as
 colorful and custom as you like (pieces, buildings, artifacts).
 
-## Run it locally
+## Run it on your machine
+
+### 1. Prerequisites
+
+- **Node.js 20 or newer** (22 LTS recommended) and **npm 10+**.
+  Check with `node -v` && `npm -v`. If you don't have it, install from
+  <https://nodejs.org> (the LTS installer) or via `nvm install --lts`.
+- A modern browser (Chrome, Edge, Firefox, or Safari).
+- That's it — no database, Docker, or accounts needed to run locally.
+
+### 2. Get the code & install
 
 ```bash
-npm install
-npm run dev          # starts the server (:8080) AND the client (:5173) together
+git clone https://github.com/bondarchukb/chess-openworld.git
+cd chess-openworld
+npm install            # installs all four packages (npm workspaces)
 ```
 
-Then open <http://localhost:5173>. Or run the two halves in separate terminals:
+### 3. Start everything with one command
 
 ```bash
-npm run start -w @chess-openworld/server   # world server (ws://localhost:8080)
-npm run dev   -w @chess-openworld/client   # isometric client (http://localhost:5173)
+npm run dev
 ```
+
+This builds the shared `protocol` package, then launches **both** halves together
+(color-tagged in your terminal):
+
+- `server` — the world server on `ws://localhost:8080`
+- `client` — the web client on `http://localhost:5173`
+
+Open **<http://localhost:5173>** in your browser. You should see a colorful
+isometric world with a chess board in the middle. The HUD (top-left) shows your
+connection status and the board state.
+
+> Prefer two terminals? Run the halves separately:
+> ```bash
+> npm run start -w @chess-openworld/server   # world server  (:8080)
+> npm run dev   -w @chess-openworld/client   # web client    (:5173)
+> ```
+
+### 4. Play with a friend (or yourself)
+
+Open a **second browser tab** at <http://localhost:5173>. You're now two players
+in the same world — walk apart and watch each other appear/disappear (interest
+management), or both press **Enter** at the board to play a real game of chess.
+
+### 5. Stop it
+
+Press **Ctrl-C** in the terminal. The server saves the world to
+`packages/server/world.save.json` on exit and reloads it next time — so your
+buildings, artifacts, and the board state persist across restarts. Delete that
+file to start fresh.
+
+### Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| HUD says `disconnected` | The server isn't running or `:8080` is blocked. Make sure `npm run dev` shows the `server` line; restart it. |
+| `EADDRINUSE :8080` or `:5173` | Another process owns the port. Stop it, or run the server on another port: `PORT=8090 npm run start -w @chess-openworld/server` (the client dev proxy expects 8080, so also update `packages/client/vite.config.ts` if you change it). |
+| Blank page / nothing renders | Hard-refresh (Ctrl-Shift-R). Check the browser console for errors. |
+| `npm install` fails | Confirm Node 20+ (`node -v`); delete `node_modules` and retry. |
+| Want a clean world | Delete `packages/server/world.save.json` and restart. |
+
+### Controls & how to play
 
 Controls: **WASD / arrows** to walk · **drag** to roam the camera anywhere on
 the map · **scroll** to zoom · **C** to recenter · **B** place a building ·
