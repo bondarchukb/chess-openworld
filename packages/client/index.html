@@ -10,6 +10,7 @@
       #hud { position: fixed; top: 10px; left: 12px; z-index: 10; font-size: 13px;
         line-height: 1.5; text-shadow: 0 1px 2px #000; pointer-events: none; }
       #hud b { color: #ffd86b; }
+      #board { color: #9fe3ff; margin-top: 4px; }
       kbd { background: #3a2b5c; border-radius: 4px; padding: 1px 5px; }
     </style>
   </head>
@@ -17,7 +18,11 @@
     <div id="hud">
       <div><b>Chess Open World</b> — move <kbd>WASD</kbd>/<kbd>arrows</kbd> ·
         place <kbd>B</kbd>uilding / <kbd>F</kbd> artifact</div>
+      <div><b>drag</b> to roam · <b>scroll</b> to zoom · <kbd>C</kbd> recenter ·
+        <kbd>Enter</kbd> take a seat · <b>click</b> a piece then a square to move ·
+        <kbd>N</kbd> new game</div>
       <div id="status">connecting…</div>
+      <div id="board"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

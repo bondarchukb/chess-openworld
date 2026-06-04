@@ -39,22 +39,31 @@ A custom "amazon" (queen + knight) is a few lines in a `PieceRegistry`, no engin
 changes. Skins are cosmetic-only and never touch rules, so the world can be as
 colorful and custom as you like (pieces, buildings, artifacts).
 
-## Run it
+## Run it locally
 
 ```bash
 npm install
-
-# Terminal 1 — the world server (ws://localhost:8080)
-npm run start -w @chess-openworld/server
-
-# Terminal 2 — the isometric client (http://localhost:5173)
-npm run dev -w @chess-openworld/client
+npm run dev          # starts the server (:8080) AND the client (:5173) together
 ```
 
-Controls: **WASD / arrows** to walk the world · **B** place a building ·
-**F** place an artifact. Open two browser tabs to see real-time multiplayer
-sync and interest culling as you walk apart. The shared chess board sits at
-the center of the world — moves are validated server-side by the engine.
+Then open <http://localhost:5173>. Or run the two halves in separate terminals:
+
+```bash
+npm run start -w @chess-openworld/server   # world server (ws://localhost:8080)
+npm run dev   -w @chess-openworld/client   # isometric client (http://localhost:5173)
+```
+
+Controls: **WASD / arrows** to walk · **drag** to roam the camera anywhere on
+the map · **scroll** to zoom · **C** to recenter · **B** place a building ·
+**F** place an artifact · **Enter** to take a seat at the board · **click** a
+piece then a square to move it · **N** for a new game once one ends.
+
+The shared chess board sits at the center of the world. The first two players to
+press **Enter** become White and Black; only the seated player may move on their
+turn. Drop a **building** on a board square to wall it off, or an **artifact**
+next to the board to grant nearby pieces extra knight-like moves — terrain and
+artifacts genuinely change the rules. Open two browser tabs to see real-time
+sync, interest culling, and a two-player game.
 
 ## Test
 
@@ -66,14 +75,52 @@ The server integration test proves the architecture end-to-end: two players
 see each other when near, get culled when far apart, and the shared board
 rejects illegal moves while applying & broadcasting legal ones.
 
-## Roadmap to real scale
+## Deploy
 
-This slice is single-process. To grow it (in order):
+The app is two pieces with two different hosting needs:
 
-- Move zones onto a sharded backend (**Nakama** or custom Node + Redis/Postgres)
-  with player handoff at zone borders.
-- Client-side interpolation + prediction/reconciliation for smooth movement.
-- Accounts, matchmaking, chat, anti-cheat (the engine already gives you
-  server-side validation, the backbone of anti-cheat).
-- Richer variant rules, artifacts, and buildings via the `PieceRegistry` seam.
+| Piece | Nature | Where it can run |
+| --- | --- | --- |
+| **client** | static files | Vercel, Netlify, any static host ✅ |
+| **server** | long-lived stateful WS process + tick loop | Render / Fly / Railway / VM ✅ — **not** Vercel ❌ |
+
+> **Why not all on Vercel?** Vercel is serverless: functions are short-lived
+> and stateless. The game server holds the whole world in memory, runs a 10 Hz
+> tick loop, and keeps sockets open — none of which survives in a serverless
+> function. So the client goes on Vercel; the server goes on a persistent host.
+
+**1. Server → Render** (free tier, WebSocket-friendly). Push to GitHub, then in
+Render: *New → Blueprint*, pick this repo. `render.yaml` + `Dockerfile` do the
+rest; health checks hit `/health`. You'll get a URL like
+`https://chess-openworld-server.onrender.com`.
+
+You can also run the server image anywhere Docker runs:
+
+```bash
+docker build -t chess-openworld-server .
+docker run -p 8080:8080 chess-openworld-server   # health: http://localhost:8080/health
 ```
+
+**2. Client → Vercel.** Import the repo (root); `vercel.json` sets the build.
+Add an env var **`VITE_WS_URL`** = your server's `wss://…` URL (the Render URL
+above, with `wss://`). Redeploy and the client connects to your live server.
+
+> Note: the free server uses ephemeral disk, so the JSON world save resets on
+> redeploy/restart. Swap `persistence.ts` for Postgres for durable state.
+
+## Implemented vs. remaining
+
+**Done:** full standard chess (castling, en passant, under-promotion, checkmate /
+stalemate / 50-move draw); data-driven board effects (walls + auras) wired from
+world entities; seats + turn ownership; structure collision; UUID ids;
+tick-gated authoritative movement; full-state persistence; new-game flow.
+
+**Remaining:**
+
+- Threefold-repetition draw (needs position history) and a chess clock.
+- Multiple boards / match instances (only one shared board today).
+- More effect types and real piece skins (the `skin` field is plumbed but the
+  client still draws one glyph per piece type).
+- Client-side interpolation + prediction for smooth movement.
+- Sharded zones (**Nakama** or custom Node + Redis/Postgres) with player handoff
+  at zone borders; accounts, matchmaking, chat, and durable Postgres storage.

@@ -11,6 +11,7 @@
  * is the reason we don't just broadcast global state.
  */
 
+import { createServer, type Server as HttpServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   WORLD,
@@ -30,6 +31,12 @@ interface Session {
   /** What this client currently believes is in its interest set. */
   known: Map<EntityId, { x: number; y: number }>;
   lastBoardVersion: number;
+  /** Where the player's camera is looking, if panned away from the avatar.
+   * Interest is streamed around the avatar AND this point. */
+  focus: { x: number; y: number } | null;
+  /** Latest requested step; applied at most once per tick (authoritative
+   * speed limit — prevents clients moving many tiles by spamming messages). */
+  pendingMove: { dx: number; dy: number } | null;
 }
 
 export interface ServerOptions {
@@ -40,14 +47,27 @@ export interface ServerOptions {
 
 export class GameServer {
   readonly world = new World();
+  private http: HttpServer;
   private wss: WebSocketServer;
   private sessions = new Set<Session>();
   private timer?: ReturnType<typeof setInterval>;
   private tick = 0;
 
   constructor(private opts: ServerOptions) {
-    this.wss = new WebSocketServer({ port: opts.port });
+    // An HTTP server fronts the websocket so hosts (Render/Fly/Railway) get a
+    // health endpoint, and WS upgrades share the same port.
+    this.http = createServer((req, res) => {
+      if (req.url === "/health" || req.url === "/") {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end(`chess-openworld ok — ${this.sessions.size} online`);
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    this.wss = new WebSocketServer({ server: this.http });
     this.wss.on("connection", (socket) => this.onConnection(socket));
+    this.http.listen(opts.port);
   }
 
   start(): void {
@@ -59,6 +79,7 @@ export class GameServer {
     if (this.timer) clearInterval(this.timer);
     for (const s of this.sessions) s.socket.close();
     await new Promise<void>((resolve) => this.wss.close(() => resolve()));
+    await new Promise<void>((resolve) => this.http.close(() => resolve()));
   }
 
   // ---- connection handling --------------------------------------------------
@@ -103,6 +124,8 @@ export class GameServer {
       name: player.label,
       known: new Map(),
       lastBoardVersion: -1,
+      focus: null,
+      pendingMove: null,
     };
     this.sessions.add(session);
 
@@ -123,23 +146,46 @@ export class GameServer {
   private handleMessage(session: Session, msg: ClientMessage): void {
     switch (msg.t) {
       case "move": {
-        const p = this.world.getEntity(session.playerId);
-        if (!p) return;
-        const dx = clampStep(msg.dx);
-        const dy = clampStep(msg.dy);
-        this.world.moveEntity(session.playerId, p.x + dx, p.y + dy);
+        // Buffer the latest direction; the tick applies one step (rate limit).
+        session.pendingMove = { dx: clampStep(msg.dx), dy: clampStep(msg.dy) };
         break;
       }
       case "place": {
         const p = this.world.getEntity(session.playerId);
         if (!p) return;
-        // Place a colorful decoration on the tile in front of the player.
+        // Don't stack a structure on an already-solid tile.
+        if (msg.kind === "building" && this.world.isSolidTile(p.x, p.y)) return;
         this.world.addEntity(msg.kind, p.x, p.y, msg.kind, { skin: msg.skin });
         break;
       }
       case "boardMove": {
-        const res = this.world.tryBoardMove(msg.from, msg.to);
+        const res = this.world.tryBoardMove(session.playerId, msg.from, msg.to, msg.promotion);
         if (!res.ok) send(session.socket, { t: "error", message: res.reason ?? "rejected" });
+        break;
+      }
+      case "sit": {
+        const color = this.world.claimSeat(session.playerId);
+        this.world.boardVersion++; // nudge a board resync so new seats show up
+        if (!color) send(session.socket, { t: "error", message: "both seats taken — spectating" });
+        break;
+      }
+      case "newGame": {
+        const s = this.world.boardSnapshot().status;
+        if (s === "playing" || s === "check") {
+          send(session.socket, { t: "error", message: "game still in progress" });
+        } else {
+          this.world.resetBoard();
+        }
+        break;
+      }
+      case "focus": {
+        const p = this.world.getEntity(session.playerId);
+        // Drop the focus once it's basically back on the avatar (following).
+        if (p && Math.abs(msg.x - p.x) <= 1 && Math.abs(msg.y - p.y) <= 1) {
+          session.focus = null;
+        } else {
+          session.focus = { x: msg.x, y: msg.y };
+        }
         break;
       }
       case "chat": {
@@ -160,7 +206,16 @@ export class GameServer {
       const p = this.world.getEntity(session.playerId);
       if (!p) continue;
 
+      // Apply at most one buffered step this tick (authoritative speed limit).
+      if (session.pendingMove) {
+        this.world.moveEntity(session.playerId, p.x + session.pendingMove.dx, p.y + session.pendingMove.dy);
+        session.pendingMove = null;
+      }
+
+      // Interest = zones around the avatar, plus zones around the camera focus
+      // when the player is panning/spectating elsewhere.
       const zones = interestZones(p.x, p.y);
+      if (session.focus) for (const z of interestZones(session.focus.x, session.focus.y)) zones.add(z);
       const current = this.world.entitiesInZones(zones);
       const currentById = new Map<EntityId, Entity>(current.map((e) => [e.id, e]));
 

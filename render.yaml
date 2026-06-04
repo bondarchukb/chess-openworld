@@ -1,0 +1,11 @@
+# Render blueprint for the game server (free tier supports WebSockets).
+# Deploy: push to GitHub, then "New + > Blueprint" in Render and pick this repo.
+# After it's live, set the client's VITE_WS_URL to wss://<this-service>.onrender.com
+services:
+  - type: web
+    name: chess-openworld-server
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    plan: free
+    autoDeploy: true

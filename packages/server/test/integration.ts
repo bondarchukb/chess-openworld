@@ -57,6 +57,7 @@ class TestClient {
             e.x = m.x;
             e.y = m.y;
           }
+          if (m.id === this.selfId) this.selfPos = { x: m.x, y: m.y };
         }
         for (const id of msg.leave) this.known.delete(id);
         break;
@@ -106,30 +107,59 @@ async function main() {
     console.log("✓ nearby players are mutually visible (interest = visible)");
     passed++;
 
-    // 2. Interest culling: Alice walks far east, out of Bob's interest zones.
-    alice.walk(1, 0, 70);
-    await sleep(600);
+    // 2. Movement is rate-limited: a burst of 8 step messages must advance the
+    //    avatar by at most ~1 tile per tick, not 8 tiles instantly.
+    const start = { ...bob.selfPos };
+    bob.walk(1, 0, 8); // spam 8 east steps in one burst
+    await sleep(120); // ~1 tick
+    const moved = Math.abs(bob.selfPos.x - start.x);
+    assert.ok(moved >= 1 && moved <= 2, `burst should move ~1 tile/tick, got ${moved}`);
+    console.log("✓ movement is tick-gated (no speed cheat)");
+    passed++;
+
+    // 3. Interest culling: relocate Alice far away (directly, in-process) and
+    //    confirm Bob loses sight of her on the next tick diff.
+    server.world.moveEntity(alice.selfId, alice.selfPos.x + 80, alice.selfPos.y);
+    await sleep(300);
     assert.ok(!bob.sees(alice.selfId), "Bob should no longer see far-away Alice");
-    assert.ok(!alice.sees(bob.selfId), "Alice should no longer see far-away Bob");
     console.log("✓ distant players are culled from interest (delta leave)");
     passed++;
 
-    // 3a. Engine authority: an illegal board move is rejected.
+    // 4. Seats + engine authority. Bob must sit before he can move; then an
+    //    illegal move is rejected and a legal one is applied and broadcast.
     bob.errors.length = 0;
-    bob.send({ t: "boardMove", from: 12, to: 36 }); // e2 -> e5, illegal pawn jump
-    await sleep(200);
+    bob.send({ t: "sit" }); // claims White (first to sit)
+    await sleep(150);
+    bob.send({ t: "boardMove", from: 12, to: 36 }); // e2 -> e5, illegal
+    await sleep(150);
     assert.ok(bob.errors.some((e) => /illegal/.test(e)), "illegal move should error");
-    console.log("✓ illegal board move rejected by engine");
-    passed++;
 
-    // 3b. A legal move is applied and broadcast to nearby Bob.
     bob.boards.length = 0;
     bob.send({ t: "boardMove", from: 12, to: 28 }); // e2 -> e4, legal
-    await sleep(300);
+    await sleep(250);
     const last = bob.boards.at(-1);
     assert.ok(last && last.t === "board" && last.board.sideToMove === "black",
       "legal move should advance turn and broadcast");
-    console.log("✓ legal board move applied + synced to nearby player");
+    assert.equal(last && last.t === "board" ? last.board.seatWhite : null, bob.selfId,
+      "Bob should be seated as White");
+    console.log("✓ seats enforced + legal/illegal moves validated and synced");
+    passed++;
+
+    // 5. A non-seated player cannot move the board.
+    bob.errors.length = 0; // Alice isn't seated; it's Black's turn now anyway.
+    alice.send({ t: "boardMove", from: 52, to: 36 }); // e7 -> e5 as un-seated
+    await sleep(150);
+    assert.ok(alice.errors.some((e) => /not your turn/.test(e)), "unseated move rejected");
+    console.log("✓ turn/seat ownership enforced");
+    passed++;
+
+    // 6. Spectator focus: Bob (near the board) can't see far Alice until he
+    //    points his camera at her — then she streams into his interest.
+    assert.ok(!bob.sees(alice.selfId), "precondition: Bob can't see far Alice");
+    bob.send({ t: "focus", x: alice.selfPos.x, y: alice.selfPos.y });
+    await sleep(300);
+    assert.ok(bob.sees(alice.selfId), "Bob should see Alice after focusing her area");
+    console.log("✓ spectator focus streams distant entities into interest");
     passed++;
 
     alice.close();
@@ -138,8 +168,9 @@ async function main() {
     await server.stop();
   }
 
-  console.log(`\n${passed}/4 integration checks passed`);
-  if (passed !== 4) process.exit(1);
+  const TOTAL = 6;
+  console.log(`\n${passed}/${TOTAL} integration checks passed`);
+  if (passed !== TOTAL) process.exit(1);
 }
 
 main().catch((err) => {

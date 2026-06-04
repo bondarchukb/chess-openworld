@@ -55,7 +55,8 @@ export type GameStatus =
   | "playing"
   | "check"
   | "checkmate"
-  | "stalemate";
+  | "stalemate"
+  | "draw";
 
 export interface GameState {
   board: (Piece | null)[];

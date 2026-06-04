@@ -9,7 +9,14 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "predev": "npm run build -w @chess-openworld/protocol",
+    "dev": "concurrently -n server,client -c green,cyan \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm run start -w @chess-openworld/server",
+    "dev:client": "npm run dev -w @chess-openworld/client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
   },
   "license": "MIT"
 }

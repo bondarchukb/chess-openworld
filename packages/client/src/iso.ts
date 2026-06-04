@@ -17,6 +17,15 @@ export function isoToScreen(x: number, y: number): { sx: number; sy: number } {
   };
 }
 
+/** Inverse of isoToScreen: screen pixels -> world tile coords. Linear, so it
+ * also converts pixel *deltas* (used for drag-to-pan). */
+export function screenToIso(sx: number, sy: number): { x: number; y: number } {
+  return {
+    x: sx / TILE_W + sy / TILE_H,
+    y: sy / TILE_H - sx / TILE_W,
+  };
+}
+
 /** Checkerboard-ish ground tint so the world is colorful, not monochrome. */
 export function tileColor(x: number, y: number, isBoard: boolean): number {
   if (isBoard) {
