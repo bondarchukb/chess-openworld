@@ -11,6 +11,7 @@
  * is the reason we don't just broadcast global state.
  */
 
+import { createServer, type Server as HttpServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   WORLD,
@@ -43,14 +44,27 @@ export interface ServerOptions {
 
 export class GameServer {
   readonly world = new World();
+  private http: HttpServer;
   private wss: WebSocketServer;
   private sessions = new Set<Session>();
   private timer?: ReturnType<typeof setInterval>;
   private tick = 0;
 
   constructor(private opts: ServerOptions) {
-    this.wss = new WebSocketServer({ port: opts.port });
+    // An HTTP server fronts the websocket so hosts (Render/Fly/Railway) get a
+    // health endpoint, and WS upgrades share the same port.
+    this.http = createServer((req, res) => {
+      if (req.url === "/health" || req.url === "/") {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end(`chess-openworld ok — ${this.sessions.size} online`);
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    this.wss = new WebSocketServer({ server: this.http });
     this.wss.on("connection", (socket) => this.onConnection(socket));
+    this.http.listen(opts.port);
   }
 
   start(): void {
@@ -62,6 +76,7 @@ export class GameServer {
     if (this.timer) clearInterval(this.timer);
     for (const s of this.sessions) s.socket.close();
     await new Promise<void>((resolve) => this.wss.close(() => resolve()));
+    await new Promise<void>((resolve) => this.http.close(() => resolve()));
   }
 
   // ---- connection handling --------------------------------------------------

@@ -27,11 +27,17 @@ import {
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 2.2;
 
-// Dev uses the Vite proxy at /ws; otherwise connect straight to the server.
+// Where to reach the game server, in priority order:
+//  1. VITE_WS_URL  — set this in Vercel to your deployed server (wss://…).
+//  2. dev proxy    — `npm run dev` forwards /ws to localhost:8080.
+//  3. fallback     — a server on the same host as the page.
+const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
+const wsProto = location.protocol === "https:" ? "wss" : "ws";
 const wsUrl =
-  location.protocol === "https:" || location.port === "5173"
-    ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`
-    : "ws://localhost:8080";
+  envUrl ??
+  (location.port === "5173"
+    ? `${wsProto}://${location.host}/ws`
+    : `${wsProto}://${location.host}`);
 
 const statusEl = document.getElementById("status")!;
 const conn = new Connection(wsUrl);

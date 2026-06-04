@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm install",
+  "buildCommand": "npm run build -w @chess-openworld/protocol && npm run build -w @chess-openworld/client",
+  "outputDirectory": "packages/client/dist"
+}

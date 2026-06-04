@@ -39,16 +39,18 @@ A custom "amazon" (queen + knight) is a few lines in a `PieceRegistry`, no engin
 changes. Skins are cosmetic-only and never touch rules, so the world can be as
 colorful and custom as you like (pieces, buildings, artifacts).
 
-## Run it
+## Run it locally
 
 ```bash
 npm install
+npm run dev          # starts the server (:8080) AND the client (:5173) together
+```
 
-# Terminal 1 — the world server (ws://localhost:8080)
-npm run start -w @chess-openworld/server
+Then open <http://localhost:5173>. Or run the two halves in separate terminals:
 
-# Terminal 2 — the isometric client (http://localhost:5173)
-npm run dev -w @chess-openworld/client
+```bash
+npm run start -w @chess-openworld/server   # world server (ws://localhost:8080)
+npm run dev   -w @chess-openworld/client   # isometric client (http://localhost:5173)
 ```
 
 Controls: **WASD / arrows** to walk · **drag** to roam the camera anywhere on
@@ -68,6 +70,39 @@ npm test            # engine unit tests + server integration test
 The server integration test proves the architecture end-to-end: two players
 see each other when near, get culled when far apart, and the shared board
 rejects illegal moves while applying & broadcasting legal ones.
+
+## Deploy
+
+The app is two pieces with two different hosting needs:
+
+| Piece | Nature | Where it can run |
+| --- | --- | --- |
+| **client** | static files | Vercel, Netlify, any static host ✅ |
+| **server** | long-lived stateful WS process + tick loop | Render / Fly / Railway / VM ✅ — **not** Vercel ❌ |
+
+> **Why not all on Vercel?** Vercel is serverless: functions are short-lived
+> and stateless. The game server holds the whole world in memory, runs a 10 Hz
+> tick loop, and keeps sockets open — none of which survives in a serverless
+> function. So the client goes on Vercel; the server goes on a persistent host.
+
+**1. Server → Render** (free tier, WebSocket-friendly). Push to GitHub, then in
+Render: *New → Blueprint*, pick this repo. `render.yaml` + `Dockerfile` do the
+rest; health checks hit `/health`. You'll get a URL like
+`https://chess-openworld-server.onrender.com`.
+
+You can also run the server image anywhere Docker runs:
+
+```bash
+docker build -t chess-openworld-server .
+docker run -p 8080:8080 chess-openworld-server   # health: http://localhost:8080/health
+```
+
+**2. Client → Vercel.** Import the repo (root); `vercel.json` sets the build.
+Add an env var **`VITE_WS_URL`** = your server's `wss://…` URL (the Render URL
+above, with `wss://`). Redeploy and the client connects to your live server.
+
+> Note: the free server uses ephemeral disk, so the JSON world save resets on
+> redeploy/restart. Swap `persistence.ts` for Postgres for durable state.
 
 ## Roadmap to real scale
 

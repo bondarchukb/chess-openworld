@@ -6,3 +6,4 @@ dist/
 .env.*
 coverage/
 packages/server/world.save.json
+!**/.env.example
