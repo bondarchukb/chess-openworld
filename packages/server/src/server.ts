@@ -34,6 +34,9 @@ interface Session {
   /** Where the player's camera is looking, if panned away from the avatar.
    * Interest is streamed around the avatar AND this point. */
   focus: { x: number; y: number } | null;
+  /** Latest requested step; applied at most once per tick (authoritative
+   * speed limit — prevents clients moving many tiles by spamming messages). */
+  pendingMove: { dx: number; dy: number } | null;
 }
 
 export interface ServerOptions {
@@ -122,6 +125,7 @@ export class GameServer {
       known: new Map(),
       lastBoardVersion: -1,
       focus: null,
+      pendingMove: null,
     };
     this.sessions.add(session);
 
@@ -142,23 +146,36 @@ export class GameServer {
   private handleMessage(session: Session, msg: ClientMessage): void {
     switch (msg.t) {
       case "move": {
-        const p = this.world.getEntity(session.playerId);
-        if (!p) return;
-        const dx = clampStep(msg.dx);
-        const dy = clampStep(msg.dy);
-        this.world.moveEntity(session.playerId, p.x + dx, p.y + dy);
+        // Buffer the latest direction; the tick applies one step (rate limit).
+        session.pendingMove = { dx: clampStep(msg.dx), dy: clampStep(msg.dy) };
         break;
       }
       case "place": {
         const p = this.world.getEntity(session.playerId);
         if (!p) return;
-        // Place a colorful decoration on the tile in front of the player.
+        // Don't stack a structure on an already-solid tile.
+        if (msg.kind === "building" && this.world.isSolidTile(p.x, p.y)) return;
         this.world.addEntity(msg.kind, p.x, p.y, msg.kind, { skin: msg.skin });
         break;
       }
       case "boardMove": {
-        const res = this.world.tryBoardMove(msg.from, msg.to);
+        const res = this.world.tryBoardMove(session.playerId, msg.from, msg.to, msg.promotion);
         if (!res.ok) send(session.socket, { t: "error", message: res.reason ?? "rejected" });
+        break;
+      }
+      case "sit": {
+        const color = this.world.claimSeat(session.playerId);
+        this.world.boardVersion++; // nudge a board resync so new seats show up
+        if (!color) send(session.socket, { t: "error", message: "both seats taken — spectating" });
+        break;
+      }
+      case "newGame": {
+        const s = this.world.boardSnapshot().status;
+        if (s === "playing" || s === "check") {
+          send(session.socket, { t: "error", message: "game still in progress" });
+        } else {
+          this.world.resetBoard();
+        }
         break;
       }
       case "focus": {
@@ -188,6 +205,12 @@ export class GameServer {
     for (const session of this.sessions) {
       const p = this.world.getEntity(session.playerId);
       if (!p) continue;
+
+      // Apply at most one buffered step this tick (authoritative speed limit).
+      if (session.pendingMove) {
+        this.world.moveEntity(session.playerId, p.x + session.pendingMove.dx, p.y + session.pendingMove.dy);
+        session.pendingMove = null;
+      }
 
       // Interest = zones around the avatar, plus zones around the camera focus
       // when the player is panning/spectating elsewhere.

@@ -48,7 +48,13 @@ export interface BoardSnapshot {
   /** 64 cells, row-major from rank 1; null or "color:type". */
   cells: (string | null)[];
   sideToMove: Color;
+  /** "playing" | "check" | "checkmate" | "stalemate" | "draw". */
   status: string;
+  /** Player ids occupying each seat, or null if open. */
+  seatWhite: EntityId | null;
+  seatBlack: EntityId | null;
+  /** Board squares (0..63) made impassable by terrain/buildings. */
+  blocked: number[];
 }
 
 // ---- Client -> Server -------------------------------------------------------
@@ -57,7 +63,13 @@ export type ClientMessage =
   | { t: "join"; name: string }
   | { t: "move"; dx: number; dy: number } // step the avatar by one tile
   | { t: "place"; kind: Extract<EntityKind, "building" | "artifact">; skin?: string }
-  | { t: "boardMove"; from: number; to: number } // move on the shared chess board
+  /** Move on the shared chess board. `promotion` selects the piece when a pawn
+   * reaches the back rank (defaults to queen). */
+  | { t: "boardMove"; from: number; to: number; promotion?: string }
+  /** Claim an open seat (White, then Black) at the shared board. */
+  | { t: "sit" }
+  /** Reset the board to a fresh game (allowed once the game has ended). */
+  | { t: "newGame" }
   /** Tell the server where the camera is looking, so it streams interest there
    * too (spectator panning). Cleared by sending a focus on the avatar. */
   | { t: "focus"; x: number; y: number }
