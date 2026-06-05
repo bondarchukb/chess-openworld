@@ -353,6 +353,8 @@ Single source of truth for everything we've discussed. Status legend:
 | 📋 | World | Persistent terrain (rubble, healing, hazard tiles) | indexed by zone |
 | 📋 | World | Spectator mode (no army) | |
 | 📋 | World | **Game-master AI agent** | LLM/heuristic watches global state, drops buffs or items on losing players (anti-snowball), buffs popular players (anti-stagnation), narrates events. Toggle per-server. Bias config: chaos/fairness/drama. |
+| 📋 | AI | **AI player interface** | Standardized API so external LLMs (Claude, GPT, custom) can join as players. See "AI player interface" section. |
+| 📋 | AI | **MCP server** | Wrap AI player interface as MCP tools so Claude Code / Claude Desktop can play directly. |
 | 📋 | World | Persistent army on disconnect (60s grace) | |
 | 📋 | Infra | Accounts (replace localStorage-only name) | |
 | 📋 | Infra | Zone hand-off across processes | the actual MMO sharding |
@@ -361,6 +363,73 @@ Single source of truth for everything we've discussed. Status legend:
 | 💰 | Mob | Custom piece builder (shape/move/attack/HP/mana/skills) | 250g unlock + per-piece point budget |
 | 💰 | Cosmetic | Premium skin packs | beyond free skin pack |
 | 💰 | Cosmetic | Custom death taunts / victory dances | |
+
+### Notable backlog item: AI player interface
+
+Today the only way to play is a browser. Goal: any AI (Claude, GPT, local
+LLM, scripted heuristic) joins the same world as a first-class player.
+
+Three layered surfaces, each thinner than the last:
+
+**1. `Bot` SDK (TypeScript)**
+
+```ts
+import { Bot } from "@chess-openworld/bots";
+
+new Bot({
+  url: "ws://localhost:8080",
+  name: "Greedy-1",
+  spawnMode: "classical",
+  policy: (state) => {
+    // state: { myPieces, enemyPieces, myKing, enemyKings, gold, inCheck }
+    return { kind: "move", pieceId, toX, toY };
+    // or { kind: "reorient", pieceId, dir } / { kind: "wait" }
+  },
+});
+```
+
+Bot class hides WebSocket plumbing + cooldown bookkeeping. Anyone writing
+a custom bot ships ~30 LOC: spawn, policy, run.
+
+**2. JSON-RPC over WebSocket (language-agnostic)**
+
+Same WS endpoint as browser clients, but the messages are normalized into
+LLM-friendly JSON instead of game protocol. Methods:
+
+- `joinAsAgent({name, spawnMode})` → `{armyId, color, you}`
+- `observe()` → snapshot of nearby pieces, your pieces, gold, ELO,
+  inCheck, list of legal actions (pre-computed by server)
+- `act(action)` → `{ok, error?, newState?}`
+
+Designed so an LLM can:
+1. Call `observe()` and get a flat structured summary.
+2. Pick one of the legal action objects verbatim.
+3. Call `act(thatAction)`.
+
+No move generation on the agent side. Server pre-filters legality.
+
+**3. MCP server**
+
+Wrap surface 2 as MCP tools so Claude Code / Claude Desktop / any MCP
+client invokes them naturally:
+
+- `chess.join(name, spawnMode?)`
+- `chess.observe()` — returns markdown table of pieces + actions
+- `chess.move(pieceId, toX, toY)`
+- `chess.reorient(pieceId, dir)`
+- `chess.wait(ms)` — polite no-op while a piece cools down
+- `chess.leave()`
+
+State pages are rendered as concise markdown (board ASCII + numbered
+legal moves) so an LLM can reason about positions without parsing raw
+JSON.
+
+### Tournament / arena mode
+
+Once bots + AI interface land, build an arena:
+- Lobby spawns N bots + M AI agents, runs for fixed time (e.g. 15 min).
+- ELO tracked separately ("bot ELO") so meatspace ELO stays clean.
+- Replay export.
 
 ### Notable backlog item: Game-master agent
 
