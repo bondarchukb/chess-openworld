@@ -355,6 +355,10 @@ Single source of truth for everything we've discussed. Status legend:
 | 📋 | World | **Game-master AI agent** | LLM/heuristic watches global state, drops buffs or items on losing players (anti-snowball), buffs popular players (anti-stagnation), narrates events. Toggle per-server. Bias config: chaos/fairness/drama. |
 | 📋 | AI | **AI player interface** | Standardized API so external LLMs (Claude, GPT, custom) can join as players. See "AI player interface" section. |
 | 📋 | AI | **MCP server** | Wrap AI player interface as MCP tools so Claude Code / Claude Desktop can play directly. |
+| 💰 | BTC | **Lightning altars (stake mode)** | Per-player bonfire holds LN-deposited sats. Spend on shop buffs. King-capture absorbs enemy altar (5% rake). See "Bitcoin altars" section. Regulated — testnet first. |
+| 💰 | BTC | **Cosmetic store in sats** | LN-paid skins, trails, taunts. No gambling component. |
+| 💰 | BTC | **Spectator-pays-GM-agent** | Watchers pay sats to instruct the GM bot ("buff red", "spawn treasure"). Chaotic + funds server. |
+| 💰 | BTC | **Tournament prize pool** | Entry fee → winner takes pot minus rake. Gambling-regulated. |
 | 📋 | World | Persistent army on disconnect (60s grace) | |
 | 📋 | Infra | Accounts (replace localStorage-only name) | |
 | 📋 | Infra | Zone hand-off across processes | the actual MMO sharding |
@@ -423,6 +427,22 @@ client invokes them naturally:
 State pages are rendered as concise markdown (board ASCII + numbered
 legal moves) so an LLM can reason about positions without parsing raw
 JSON.
+
+### Bitcoin altars
+
+Each player has a personal **altar** at spawn. Donate sats via Lightning
+→ altar grows → GM-agent grants buffs/items proportional to balance. On
+king-capture you absorb the victim's altar. You're betting on yourself;
+prize is other players' bets against you.
+
+Core theses:
+- Altar visible, exact sats shown to everyone.
+- AFK 5 min → altar locked, then forfeit to nearby active killers.
+- Same world, opt-in altar (casual + stakes coexist).
+- 5% house rake on every absorption.
+- Cosmetic store also paid in sats (no stake component).
+- Spectators can pay sats to instruct the GM-agent (buff X, spawn treasure).
+- Tournament prize-pool mode (entry fee → winner takes pot).
 
 ### Tournament / arena mode
 
