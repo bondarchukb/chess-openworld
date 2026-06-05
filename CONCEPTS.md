@@ -262,6 +262,41 @@ both ends.
 
 ---
 
+## 13b. Monetization: Lightning skin shop (mock)
+
+The game sells **cosmetic avatar skins** for Bitcoin over the **Lightning
+Network** (instant, sub-cent payments — on-chain BTC is too slow/expensive for
+this). It's built so you can develop the whole flow with **no real money**:
+
+**The flow** (all server-authoritative):
+
+1. Client clicks *Buy* → `{ buySkin }`.
+2. Server asks the **payment provider** for an invoice (`payments.ts`) and sends
+   it back as `{ invoice, bolt11, … }`.
+3. The player pays it with a Lightning wallet. (In mock mode, the *Simulate
+   payment* button sends `{ devPay }`.)
+4. The server confirms settlement **with the provider** — never trusting the
+   client — then grants the skin and sends `{ purchased }` + an updated
+   `{ wallet }`.
+5. *Equip* (`{ equipSkin }`) sets the skin on the player's avatar entity, which
+   re-streams to everyone nearby.
+
+**Why it's safe & low-risk:**
+
+- **Cosmetic only.** Skins never touch the rules (no pay-to-win), which keeps
+  this clear of gambling / real-money-gaming regulation. (Wagering real BTC on
+  matches would be a different, heavily-regulated beast — see the README chat.)
+- **No custody.** The game never holds player balances; it charges per item.
+- **Provider-agnostic.** `payments.ts` defines a `LightningProvider` interface
+  with a `MockLightningProvider` for dev/tests. Swap in **BTCPay** (self-hosted,
+  non-custodial), **LNbits**, or a hosted API to go live — no game-code changes.
+- **Entitlements persist.** Purchases are keyed to a per-browser `accountId` and
+  saved with the world, so they survive restarts.
+
+**Going live checklist:** verify settlement via signed webhook (not the client),
+make granting idempotent per invoice, start on testnet/regtest, and price in
+sats. See the security notes at the top of `payments.ts`.
+
 ## 14. Why the client and server deploy differently
 
 - The **client** is just static files (HTML/JS) — it can live on any static host

@@ -11,11 +11,13 @@
  * is the reason we don't just broadcast global state.
  */
 
+import { randomUUID } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   WORLD,
   interestZones,
+  skinById,
   zoneOf,
   type ClientMessage,
   type Entity,
@@ -23,6 +25,7 @@ import {
   type ServerMessage,
 } from "@chess-openworld/protocol";
 import { World } from "./world.js";
+import { MockLightningProvider, type LightningProvider } from "./payments.js";
 
 interface Session {
   playerId: EntityId;
@@ -37,6 +40,14 @@ interface Session {
   /** Latest requested step; applied at most once per tick (authoritative
    * speed limit — prevents clients moving many tiles by spamming messages). */
   pendingMove: { dx: number; dy: number } | null;
+  /** Stable identity for cosmetic purchases across sessions. */
+  accountId: string;
+}
+
+/** An invoice awaiting settlement, with who/what it pays for. */
+interface PendingPurchase {
+  session: Session;
+  skinId: string;
 }
 
 export interface ServerOptions {
@@ -51,7 +62,12 @@ export class GameServer {
   private wss: WebSocketServer;
   private sessions = new Set<Session>();
   private timer?: ReturnType<typeof setInterval>;
+  private settleTimer?: ReturnType<typeof setInterval>;
   private tick = 0;
+  /** Lightning backend (mock by default; swap for BTCPay/LNbits/hosted). */
+  private payments: LightningProvider = new MockLightningProvider();
+  /** invoiceId -> pending purchase. */
+  private pending = new Map<string, PendingPurchase>();
 
   constructor(private opts: ServerOptions) {
     // An HTTP server fronts the websocket so hosts (Render/Fly/Railway) get a
@@ -73,10 +89,14 @@ export class GameServer {
   start(): void {
     const interval = Math.round(1000 / WORLD.tickHz);
     this.timer = setInterval(() => this.step(), interval);
+    // Poll pending invoices for settlement (how a real provider's webhook or
+    // polling would drive granting). The mock also settles instantly on devPay.
+    this.settleTimer = setInterval(() => void this.pollSettlements(), 1500);
   }
 
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
+    if (this.settleTimer) clearInterval(this.settleTimer);
     for (const s of this.sessions) s.socket.close();
     await new Promise<void>((resolve) => this.wss.close(() => resolve()));
     await new Promise<void>((resolve) => this.http.close(() => resolve()));
@@ -97,7 +117,7 @@ export class GameServer {
 
       if (msg.t === "join") {
         if (session) return;
-        session = this.handleJoin(socket, msg.name);
+        session = this.handleJoin(socket, msg.name, msg.accountId);
         return;
       }
       if (!session) return send(socket, { t: "error", message: "join first" });
@@ -112,11 +132,15 @@ export class GameServer {
     });
   }
 
-  private handleJoin(socket: WebSocket, name: string): Session {
+  private handleJoin(socket: WebSocket, name: string, accountId?: string): Session {
     // Spawn near the shared board so new players find the action.
     const spawnX = this.world.boardOrigin.x + randInt(-6, 6);
     const spawnY = this.world.boardOrigin.y + randInt(-6, 6);
-    const player = this.world.addEntity("player", spawnX, spawnY, name || "anon");
+    const account = accountId || randomUUID();
+    const wallet = this.world.walletOf(account);
+    const player = this.world.addEntity("player", spawnX, spawnY, name || "anon", {
+      skin: wallet.equipped.avatar, // wear any previously-purchased avatar skin
+    });
 
     const session: Session = {
       playerId: player.id,
@@ -126,6 +150,7 @@ export class GameServer {
       lastBoardVersion: -1,
       focus: null,
       pendingMove: null,
+      accountId: account,
     };
     this.sessions.add(session);
 
@@ -139,6 +164,7 @@ export class GameServer {
     const visible = this.world.entitiesInZones(interestZones(player.x, player.y));
     for (const e of visible) session.known.set(e.id, { x: e.x, y: e.y });
     send(socket, { t: "snapshot", entities: visible });
+    send(socket, { t: "wallet", wallet });
     session.lastBoardVersion = this.world.boardVersion;
     return session;
   }
@@ -185,6 +211,34 @@ export class GameServer {
           session.focus = null;
         } else {
           session.focus = { x: msg.x, y: msg.y };
+        }
+        break;
+      }
+      case "buySkin": {
+        void this.handleBuySkin(session, msg.skinId);
+        break;
+      }
+      case "equipSkin": {
+        const ok = this.world.equipSkin(session.accountId, msg.slot, msg.skinId);
+        if (!ok) {
+          send(session.socket, { t: "error", message: "you don't own that skin" });
+          break;
+        }
+        if (msg.slot === "avatar") {
+          const e = this.world.getEntity(session.playerId);
+          if (e) e.skin = msg.skinId ?? undefined;
+          this.resendEntity(session.playerId); // make others see the new look
+        }
+        send(session.socket, { t: "wallet", wallet: this.world.walletOf(session.accountId) });
+        break;
+      }
+      case "devPay": {
+        // MOCK ONLY: simulate the wallet paying, then settle immediately.
+        if (this.payments.isMock && this.payments.settle) {
+          this.payments.settle(msg.invoiceId);
+          void this.settleInvoice(msg.invoiceId);
+        } else {
+          send(session.socket, { t: "error", message: "devPay disabled (real provider)" });
         }
         break;
       }
@@ -260,6 +314,49 @@ export class GameServer {
       const p = this.world.getEntity(s.playerId);
       if (p && zones.has(zoneOf(p.x, p.y))) send(s.socket, msg);
     }
+  }
+
+  // ---- payments -------------------------------------------------------------
+
+  private async handleBuySkin(session: Session, skinId: string): Promise<void> {
+    const item = skinById(skinId);
+    if (!item) return send(session.socket, { t: "error", message: "unknown skin" });
+    if (this.world.walletOf(session.accountId).owned.includes(skinId)) {
+      return send(session.socket, { t: "error", message: "already owned" });
+    }
+    const invoice = await this.payments.createInvoice(item.priceSats, `skin:${skinId}`);
+    this.pending.set(invoice.id, { session, skinId });
+    send(session.socket, {
+      t: "invoice",
+      invoiceId: invoice.id,
+      skinId,
+      bolt11: invoice.bolt11,
+      amountSats: invoice.amountSats,
+    });
+  }
+
+  /** Grant the skin if (and only if) the provider confirms the invoice paid. */
+  private async settleInvoice(invoiceId: string): Promise<void> {
+    const purchase = this.pending.get(invoiceId);
+    if (!purchase) return; // unknown or already settled (idempotent)
+    if ((await this.payments.getStatus(invoiceId)) !== "paid") return;
+    this.pending.delete(invoiceId);
+    this.world.grantSkin(purchase.session.accountId, purchase.skinId);
+    send(purchase.session.socket, { t: "purchased", skinId: purchase.skinId });
+    send(purchase.session.socket, {
+      t: "wallet",
+      wallet: this.world.walletOf(purchase.session.accountId),
+    });
+  }
+
+  private async pollSettlements(): Promise<void> {
+    for (const id of [...this.pending.keys()]) await this.settleInvoice(id);
+  }
+
+  /** Drop an entity from every client's known set so it re-streams in full
+   * (used when a cosmetic like an avatar skin changes). */
+  private resendEntity(id: EntityId): void {
+    for (const s of this.sessions) s.known.delete(id);
   }
 }
 

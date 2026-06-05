@@ -121,6 +121,15 @@ next to the board to grant nearby pieces extra knight-like moves — terrain and
 artifacts genuinely change the rules. Open two browser tabs to see real-time
 sync, interest culling, and a two-player game.
 
+**Lightning skin shop (mock).** The panel in the bottom-right sells cosmetic
+avatar skins for sats. Click **Buy**, then **Simulate payment (mock)** — the
+server only grants the skin once the (mock) Lightning invoice settles, then
+**Equip** it to change how your avatar looks to everyone. Purchases are tied to a
+per-browser `accountId` and persist across restarts. It's a real, end-to-end
+purchase→entitlement→equip flow with a **mock** payment provider; swap
+`packages/server/src/payments.ts` for BTCPay/LNbits/a hosted API to go live. See
+[CONCEPTS.md §Monetization](./CONCEPTS.md) for the design and the legal caveats.
+
 ## Test
 
 ```bash

@@ -42,6 +42,18 @@ export const ENTITY_STYLE: Record<string, { color: number; glyph: string }> = {
   piece: { color: 0xffffff, glyph: "♟" },
 };
 
+/** Cosmetic avatar skins, keyed by skin id (purely visual, bought with sats). */
+export const AVATAR_SKINS: Record<string, { color: number; glyph: string }> = {
+  gold: { color: 0xffd700, glyph: "♛" },
+  ninja: { color: 0x2b2b3a, glyph: "🥷" },
+  wizard: { color: 0x9b5de5, glyph: "🧙" },
+};
+
+/** Pick the visual style for an avatar, honoring an equipped skin. */
+export function avatarStyle(skin?: string): { color: number; glyph: string } {
+  return (skin && AVATAR_SKINS[skin]) || ENTITY_STYLE.player!;
+}
+
 const PIECE_GLYPH: Record<string, string> = {
   pawn: "♟",
   knight: "♞",

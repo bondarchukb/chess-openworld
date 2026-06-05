@@ -25,6 +25,39 @@ export type EntityId = string;
 
 export type Color = "white" | "black";
 
+// ---- Monetization: cosmetic skins (Lightning) ------------------------------
+
+/** Where a skin applies. Only avatars today; pieces/buildings can follow. */
+export type SkinSlot = "avatar";
+
+/** A purchasable cosmetic. Prices are in sats (1 BTC = 100,000,000 sats).
+ * Skins are PURELY cosmetic — they never affect rules, so this is not
+ * pay-to-win and stays clear of gambling/real-money-gaming regulation. */
+export interface SkinItem {
+  id: string;
+  name: string;
+  slot: SkinSlot;
+  priceSats: number;
+}
+
+/** The shop catalog. Shared so client and server agree on ids and prices;
+ * the server still treats its own copy as authoritative for charging. */
+export const SKINS: readonly SkinItem[] = [
+  { id: "gold", name: "Gold Champion", slot: "avatar", priceSats: 500 },
+  { id: "ninja", name: "Shadow Ninja", slot: "avatar", priceSats: 1000 },
+  { id: "wizard", name: "Arcane Wizard", slot: "avatar", priceSats: 2100 },
+];
+
+export function skinById(id: string): SkinItem | undefined {
+  return SKINS.find((s) => s.id === id);
+}
+
+/** A player's cosmetic entitlements: what they own and what they're wearing. */
+export interface Wallet {
+  owned: string[];
+  equipped: { avatar?: string };
+}
+
 /** Kinds of things that live on a tile in the open world. */
 export type EntityKind = "player" | "piece" | "building" | "artifact";
 
@@ -60,7 +93,9 @@ export interface BoardSnapshot {
 // ---- Client -> Server -------------------------------------------------------
 
 export type ClientMessage =
-  | { t: "join"; name: string }
+  /** `accountId` is a client-generated id (stored in localStorage) that ties
+   * purchases to a person across sessions — a minimal stand-in for accounts. */
+  | { t: "join"; name: string; accountId?: string }
   | { t: "move"; dx: number; dy: number } // step the avatar by one tile
   | { t: "place"; kind: Extract<EntityKind, "building" | "artifact">; skin?: string }
   /** Move on the shared chess board. `promotion` selects the piece when a pawn
@@ -73,6 +108,12 @@ export type ClientMessage =
   /** Tell the server where the camera is looking, so it streams interest there
    * too (spectator panning). Cleared by sending a focus on the avatar. */
   | { t: "focus"; x: number; y: number }
+  /** Request a Lightning invoice to buy a skin. Server replies with `invoice`. */
+  | { t: "buySkin"; skinId: string }
+  /** Wear (or remove, with null) an owned skin in a slot. */
+  | { t: "equipSkin"; slot: SkinSlot; skinId: string | null }
+  /** DEV/MOCK ONLY: simulate paying an invoice. Ignored by real providers. */
+  | { t: "devPay"; invoiceId: string }
   | { t: "chat"; text: string }
   | { t: "ping" };
 
@@ -96,6 +137,12 @@ export type ServerMessage =
       move: { id: EntityId; x: number; y: number }[];
     }
   | { t: "board"; board: BoardSnapshot }
+  /** The player's current entitlements (sent on join and after any change). */
+  | { t: "wallet"; wallet: Wallet }
+  /** A Lightning invoice to pay for a pending skin purchase. */
+  | { t: "invoice"; invoiceId: string; skinId: string; bolt11: string; amountSats: number }
+  /** A purchase settled — the skin is now owned. */
+  | { t: "purchased"; skinId: string }
   | { t: "chat"; from: string; text: string }
   | { t: "error"; message: string }
   | { t: "pong" };

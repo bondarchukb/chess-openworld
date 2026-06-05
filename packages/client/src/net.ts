@@ -10,20 +10,40 @@ import type {
   EntityId,
   ServerMessage,
   SelfInfo,
+  Wallet,
 } from "@chess-openworld/protocol";
+
+/** A stable per-browser id so purchases stick across reloads. */
+function accountId(): string {
+  let id = localStorage.getItem("accountId");
+  if (!id) {
+    id = (crypto.randomUUID?.() ?? String(Math.random()).slice(2));
+    localStorage.setItem("accountId", id);
+  }
+  return id;
+}
 
 export class Connection {
   private socket: WebSocket;
   self: SelfInfo | null = null;
   entities = new Map<EntityId, Entity>();
   board: BoardSnapshot | null = null;
+  wallet: Wallet = { owned: [], equipped: {} };
+  /** Active invoice awaiting payment, if any (shown by the shop UI). */
+  invoice: { invoiceId: string; skinId: string; bolt11: string; amountSats: number } | null = null;
   onStatus: (text: string) => void = () => {};
+  /** Fired when wallet/invoice state changes, so the shop UI can re-render. */
+  onWallet: () => void = () => {};
 
   constructor(url: string) {
     this.socket = new WebSocket(url);
     this.socket.addEventListener("open", () => {
       this.onStatus("connected — joining…");
-      this.send({ t: "join", name: `guest-${Math.floor(Math.random() * 1000)}` });
+      this.send({
+        t: "join",
+        name: `guest-${Math.floor(Math.random() * 1000)}`,
+        accountId: accountId(),
+      });
     });
     this.socket.addEventListener("close", () => this.onStatus("disconnected"));
     this.socket.addEventListener("message", (ev) => {
@@ -55,6 +75,19 @@ export class Connection {
         break;
       case "board":
         this.board = msg.board;
+        break;
+      case "wallet":
+        this.wallet = msg.wallet;
+        this.onWallet();
+        break;
+      case "invoice":
+        this.invoice = msg;
+        this.onWallet();
+        break;
+      case "purchased":
+        this.invoice = null; // settled; wallet message follows with the new skin
+        this.onStatus(`purchased ${msg.skinId} ⚡`);
+        this.onWallet();
         break;
       case "error":
         this.onStatus(`server: ${msg.message}`);

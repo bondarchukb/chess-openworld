@@ -24,12 +24,15 @@ import {
 } from "@chess-openworld/engine";
 import {
   WORLD,
+  skinById,
   zoneOf,
   type BoardSnapshot,
   type Color,
   type Entity,
   type EntityId,
   type EntityKind,
+  type SkinSlot,
+  type Wallet,
 } from "@chess-openworld/protocol";
 
 /** Globally-unique ids — safe across restarts and (later) multiple servers,
@@ -45,10 +48,17 @@ const KNIGHT_HOPS: [number, number][] = [
  * grant the piece there extra knight-like hops — a demonstrable rule modifier. */
 const AURA_RADIUS = 2;
 
+interface Account {
+  owned: Set<string>;
+  equipped: { avatar?: string };
+}
+
 export interface PersistedWorld {
   entities: Entity[];
   /** Full engine state so castling rights / en passant / clocks survive. */
   board: GameState;
+  /** Cosmetic entitlements per account id (purchases persist). */
+  accounts?: { id: string; owned: string[]; equipped: { avatar?: string } }[];
 }
 
 export class World {
@@ -57,6 +67,8 @@ export class World {
   private zoneIndex = new Map<number, Set<EntityId>>();
   /** tile index -> count of solid (blocking) entities, for collision. */
   private solid = new Map<number, number>();
+  /** account id -> owned/equipped cosmetics (the entitlement ledger). */
+  private accounts = new Map<string, Account>();
 
   readonly registry = new PieceRegistry();
   board: GameState = initialState();
@@ -211,12 +223,49 @@ export class World {
     this.boardVersion++;
   }
 
+  // ---- accounts & cosmetic entitlements ------------------------------------
+
+  private account(id: string): Account {
+    let a = this.accounts.get(id);
+    if (!a) this.accounts.set(id, (a = { owned: new Set(), equipped: {} }));
+    return a;
+  }
+
+  /** Grant a skin to an account. Idempotent — safe to call per settled invoice. */
+  grantSkin(accountId: string, skinId: string): void {
+    this.account(accountId).owned.add(skinId);
+  }
+
+  /** Equip (or unequip with null) an owned skin. Returns false if not owned. */
+  equipSkin(accountId: string, slot: SkinSlot, skinId: string | null): boolean {
+    const a = this.account(accountId);
+    if (skinId === null) {
+      delete a.equipped[slot];
+      return true;
+    }
+    if (!a.owned.has(skinId)) return false;
+    const item = skinById(skinId);
+    if (!item || item.slot !== slot) return false;
+    a.equipped[slot] = skinId;
+    return true;
+  }
+
+  walletOf(accountId: string): Wallet {
+    const a = this.account(accountId);
+    return { owned: [...a.owned], equipped: { ...a.equipped } };
+  }
+
   // ---- persistence ----------------------------------------------------------
 
   serialize(): PersistedWorld {
     return {
       entities: [...this.entities.values()].filter((e) => e.kind !== "player"),
       board: this.board, // full GameState (JSON-serializable)
+      accounts: [...this.accounts].map(([id, a]) => ({
+        id,
+        owned: [...a.owned],
+        equipped: { ...a.equipped },
+      })),
     };
   }
 
@@ -227,6 +276,9 @@ export class World {
       if (isSolid(e)) this.bumpSolid(tileIndex(e.x, e.y), 1);
     }
     if (data.board?.board) this.board = data.board;
+    for (const a of data.accounts ?? []) {
+      this.accounts.set(a.id, { owned: new Set(a.owned), equipped: { ...a.equipped } });
+    }
     // Seats reference live connections, which are gone after a restart.
     this.seats = { white: null, black: null };
   }

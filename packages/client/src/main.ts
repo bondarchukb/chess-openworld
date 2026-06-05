@@ -14,12 +14,13 @@
  */
 
 import { Application, Container, Graphics, Text } from "pixi.js";
-import { WORLD } from "@chess-openworld/protocol";
+import { SKINS, WORLD } from "@chess-openworld/protocol";
 import { Connection } from "./net.js";
 import {
   ENTITY_STYLE,
   TILE_H,
   TILE_W,
+  avatarStyle,
   isoToScreen,
   pieceGlyph,
   screenToIso,
@@ -43,8 +44,46 @@ const wsUrl =
 
 const statusEl = document.getElementById("status")!;
 const boardEl = document.getElementById("board")!;
+const shopEl = document.getElementById("shop")!;
 const conn = new Connection(wsUrl);
 conn.onStatus = (t) => (statusEl.textContent = t);
+
+// ---- skin shop (Lightning, mock) -------------------------------------------
+
+const fmtSats = (n: number) => `${n.toLocaleString()} sats`;
+
+function renderShop(): void {
+  const w = conn.wallet;
+  const rows = SKINS.map((s) => {
+    const owned = w.owned.includes(s.id);
+    const equipped = w.equipped.avatar === s.id;
+    const btn = equipped
+      ? `<button data-act="unequip">Unequip</button>`
+      : owned
+        ? `<button data-act="equip" data-id="${s.id}">Equip</button>`
+        : `<button data-act="buy" data-id="${s.id}">Buy · ${fmtSats(s.priceSats)}</button>`;
+    return `<div class="row"><span>${s.name}${equipped ? " ✓" : ""}</span>${btn}</div>`;
+  }).join("");
+  const inv = conn.invoice
+    ? `<div class="inv">⚡ Invoice for <b>${conn.invoice.skinId}</b> — ${fmtSats(conn.invoice.amountSats)}
+         <code>${conn.invoice.bolt11.slice(0, 26)}…</code>
+         <button data-act="pay">Simulate payment (mock)</button></div>`
+    : "";
+  shopEl.innerHTML = `<div class="title">⚡ Skin Shop <small>(mock)</small></div>${rows}${inv}`;
+  shopEl.querySelectorAll("button").forEach((b) =>
+    b.addEventListener("click", () => {
+      const act = b.dataset.act;
+      const id = b.dataset.id;
+      if (act === "buy" && id) conn.send({ t: "buySkin", skinId: id });
+      else if (act === "equip" && id) conn.send({ t: "equipSkin", slot: "avatar", skinId: id });
+      else if (act === "unequip") conn.send({ t: "equipSkin", slot: "avatar", skinId: null });
+      else if (act === "pay" && conn.invoice)
+        conn.send({ t: "devPay", invoiceId: conn.invoice.invoiceId });
+    })
+  );
+}
+conn.onWallet = renderShop;
+renderShop();
 
 const app = new Application();
 await app.init({ background: "#1b1030", resizeTo: window, antialias: true });
@@ -112,9 +151,11 @@ window.addEventListener("pointermove", (e) => {
 });
 
 window.addEventListener("pointerup", (e) => {
+  const wasCanvasDrag = dragging; // only true if the press started on the canvas
   dragging = false;
   app.canvas.style.cursor = "grab";
-  if (dragMoved < 6) handleClick(e.clientX, e.clientY); // a tap, not a drag
+  // A tap on the canvas (not the shop UI, not a drag) is a board interaction.
+  if (wasCanvasDrag && dragMoved < 6) handleClick(e.clientX, e.clientY);
 });
 
 app.canvas.addEventListener(
@@ -263,11 +304,16 @@ app.ticker.add(() => {
     });
   }
 
-  // World entities — keyed by id; position updates each frame.
+  // World entities — keyed by id; position updates each frame. Players include
+  // their equipped skin in the key so a cosmetic change rebuilds the node.
   for (const e of conn.entities.values()) {
-    const style = ENTITY_STYLE[e.kind] ?? ENTITY_STYLE.player!;
-    const label = e.kind === "player" ? e.label : undefined;
-    place(`e${e.id}`, e.x, e.y, () => markerNode(style.glyph, style.color, label));
+    if (e.kind === "player") {
+      const s = avatarStyle(e.skin);
+      place(`e${e.id}:${e.skin ?? ""}`, e.x, e.y, () => markerNode(s.glyph, s.color, e.label));
+    } else {
+      const style = ENTITY_STYLE[e.kind] ?? ENTITY_STYLE.player!;
+      place(`e${e.id}`, e.x, e.y, () => markerNode(style.glyph, style.color));
+    }
   }
 
   // Cull nodes that weren't used this frame.

@@ -23,6 +23,8 @@ class TestClient {
   known = new Map<EntityId, Entity>();
   boards: ServerMessage[] = [];
   errors: string[] = [];
+  wallet: { owned: string[]; equipped: { avatar?: string } } = { owned: [], equipped: {} };
+  lastInvoice: string | null = null;
   private ready: Promise<void>;
 
   constructor(name: string) {
@@ -63,6 +65,12 @@ class TestClient {
         break;
       case "board":
         this.boards.push(msg);
+        break;
+      case "wallet":
+        this.wallet = msg.wallet;
+        break;
+      case "invoice":
+        this.lastInvoice = msg.invoiceId;
         break;
       case "error":
         this.errors.push(msg.message);
@@ -162,13 +170,38 @@ async function main() {
     console.log("✓ spectator focus streams distant entities into interest");
     passed++;
 
+    // 7. Lightning purchase flow (mock): buy a skin -> pay -> own it -> equip it.
+    bob.errors.length = 0;
+    bob.send({ t: "buySkin", skinId: "gold" });
+    await sleep(150);
+    assert.ok(bob.lastInvoice, "buying should return an invoice");
+    assert.ok(!bob.wallet.owned.includes("gold"), "not owned until paid");
+    bob.send({ t: "devPay", invoiceId: bob.lastInvoice! }); // simulate paying
+    await sleep(200);
+    assert.ok(bob.wallet.owned.includes("gold"), "skin owned after payment settles");
+    bob.send({ t: "equipSkin", slot: "avatar", skinId: "gold" });
+    await sleep(150);
+    assert.equal(bob.wallet.equipped.avatar, "gold", "skin equipped");
+    // Server applies the cosmetic to the avatar entity authoritatively.
+    assert.equal(server.world.getEntity(bob.selfId)?.skin, "gold", "avatar wears the skin");
+    console.log("✓ lightning skin purchase + equip (mock) works end-to-end");
+    passed++;
+
+    // 8. Can't equip a skin you don't own.
+    bob.errors.length = 0;
+    bob.send({ t: "equipSkin", slot: "avatar", skinId: "wizard" });
+    await sleep(150);
+    assert.ok(bob.errors.some((e) => /don't own/.test(e)), "unowned equip rejected");
+    console.log("✓ cannot equip an unowned skin (no client-side entitlement)");
+    passed++;
+
     alice.close();
     bob.close();
   } finally {
     await server.stop();
   }
 
-  const TOTAL = 6;
+  const TOTAL = 8;
   console.log(`\n${passed}/${TOTAL} integration checks passed`);
   if (passed !== TOTAL) process.exit(1);
 }
