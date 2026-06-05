@@ -71,6 +71,8 @@ export interface PlayerStats {
   losses: number;
   kills: number;
   deaths: number;
+  /** Lightning sats. Starter grant 10,000. Earn on kill, lose on death. */
+  sats: number;
 }
 
 export interface SelfInfo {
@@ -109,6 +111,8 @@ export type ServerMessage =
       killerName: string;
       killerElo: number;
       eloDelta: number;
+      /** Sats taken from victim by killer. Negative on victim's wire view. */
+      satsDelta: number;
       newStats: PlayerStats;
       respawnAt: number;
     }
@@ -123,6 +127,7 @@ export type ServerMessage =
         spawnX: number; spawnY: number;
         inCheck: boolean;
         elo: number;
+        sats: number;
         dead: boolean;
       }[];
     }

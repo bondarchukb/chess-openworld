@@ -101,22 +101,35 @@
     </div>
     <div id="hud-hint">click a piece to act</div>
 
-    <div id="skillbar"></div>
+    <div id="actionbar">
+      <div id="skillbar"></div>
+      <div id="itembar"></div>
+      <div id="tileinfo"></div>
+    </div>
     <style>
-      #skillbar { position: fixed; bottom: 48px; left: 50%; transform: translateX(-50%);
-        z-index: 11; display: none; gap: 10px; pointer-events: none; }
-      .skill {
-        width: 56px; height: 56px; border-radius: 10px;
+      #actionbar { position: fixed; bottom: 44px; left: 50%; transform: translateX(-50%);
+        z-index: 11; display: none; flex-direction: column; align-items: center; gap: 6px;
+        pointer-events: none; }
+      #actionbar.visible { display: flex; }
+      #skillbar, #itembar { display: flex; gap: 8px; }
+      .slot {
+        width: 50px; height: 50px; border-radius: 9px;
         background: rgba(31,23,56,.92); border: 2px solid #3a2b5c;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
-        font-size: 24px; color: #ffd86b; position: relative;
-        box-shadow: 0 4px 14px rgba(0,0,0,.5); pointer-events: auto;
+        font-size: 22px; color: #ffd86b; position: relative;
+        box-shadow: 0 4px 14px rgba(0,0,0,.45); pointer-events: auto;
       }
-      .skill .key { position: absolute; bottom: 2px; right: 4px; font-size: 10px; color: #bda7e2; font-weight: 700; }
-      .skill .name { position: absolute; top: -16px; font-size: 10px; color: #bda7e2;
+      .slot.skill { border-color: #4a3a6c; }
+      .slot.item  { border-color: #6c5a3a; color: #d2a85a; font-size: 20px; }
+      .slot .key { position: absolute; bottom: 1px; right: 3px; font-size: 9px; color: #bda7e2; font-weight: 700; }
+      .slot .name { position: absolute; top: -14px; font-size: 10px; color: #bda7e2;
         background: rgba(0,0,0,.55); padding: 1px 4px; border-radius: 3px; white-space: nowrap; }
-      .skill.disabled { opacity: 0.4; }
-      .skill.locked { color: #6b5a8a; }
+      .slot.locked { opacity: 0.45; filter: grayscale(0.6); }
+      .slot.count  { font-size: 18px; }
+      .slot .count-badge { position: absolute; top: 1px; left: 3px; font-size: 9px; color: #88ee66; font-weight: 700; }
+      #tileinfo { font-size: 11px; color: #bda7e2; background: rgba(0,0,0,.5);
+        padding: 3px 8px; border-radius: 4px; text-shadow: 0 1px 2px #000; }
+      #tileinfo b { color: #ffd86b; }
     </style>
 
     <div id="help-overlay">

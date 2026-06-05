@@ -123,13 +123,17 @@ export class GameServer {
   }
 
   private broadcastRoster(): void {
-    const armies = [...this.world.armies.values()].map((a) => ({
-      id: a.id, name: a.name, color: a.color,
-      spawnX: a.spawnX, spawnY: a.spawnY,
-      inCheck: a.inCheck,
-      elo: this.stats.get(a.name).elo,
-      dead: a.dead,
-    }));
+    const armies = [...this.world.armies.values()].map((a) => {
+      const s = this.stats.get(a.name);
+      return {
+        id: a.id, name: a.name, color: a.color,
+        spawnX: a.spawnX, spawnY: a.spawnY,
+        inCheck: a.inCheck,
+        elo: s.elo,
+        sats: s.sats,
+        dead: a.dead,
+      };
+    });
     const msg: ServerMessage = { t: "roster", armies };
     for (const s of this.sessions) send(s.socket, msg);
   }
@@ -186,7 +190,7 @@ export class GameServer {
         name: session.name,
         color: "#888888",
         spawnX: 0, spawnY: 0,
-        stats: { elo: 0, wins: 0, losses: 0, kills: 0, deaths: 0 },
+        stats: { elo: 0, wins: 0, losses: 0, kills: 0, deaths: 0, sats: 0 },
         spectator: true,
       },
       world: WORLD,
@@ -260,7 +264,7 @@ export class GameServer {
     const victimName = victimSession?.name ?? army.name;
     const killerStatsBefore = this.stats.get(killer.name);
     const killerEloBefore = killerStatsBefore.elo;
-    const { winnerDelta, loserDelta } = this.stats.applyKill(killer.name, victimName);
+    const { winnerDelta, loserDelta, satsTransferred } = this.stats.applyKill(killer.name, victimName);
     const victimStats = this.stats.get(victimName);
     void winnerDelta;
     // Wipe board pieces immediately; respawn after delay.
@@ -273,6 +277,7 @@ export class GameServer {
         killerName: killer.name,
         killerElo: killerEloBefore,
         eloDelta: loserDelta,
+        satsDelta: -satsTransferred,
         newStats: victimStats,
         respawnAt,
       });

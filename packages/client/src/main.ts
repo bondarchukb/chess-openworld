@@ -16,7 +16,7 @@ import { PieceRegistry, STANDARD_PIECES, legalMovesPlaneFiltered, type Occupant 
 import { WORLD } from "@chess-openworld/protocol";
 import type { Piece, PieceId, SelfInfo } from "@chess-openworld/protocol";
 import { Connection } from "./net.js";
-import { CELL, tileColor, worldToScreen } from "./iso.js";
+import { CELL, TILE_DEFS, tileColor, tileTypeAt, worldToScreen } from "./iso.js";
 
 const PIECE_SVG: Record<string, string> = {
   king: "/pieces/wK.svg",
@@ -53,6 +53,9 @@ const entryEl = document.getElementById("entry") as HTMLDivElement;
 const entryNameEl = document.getElementById("entry-name") as HTMLInputElement;
 const entryJoinEl = document.getElementById("entry-join") as HTMLButtonElement;
 const skillbarEl = document.getElementById("skillbar") as HTMLDivElement;
+const itembarEl = document.getElementById("itembar") as HTMLDivElement;
+const tileinfoEl = document.getElementById("tileinfo") as HTMLDivElement;
+const actionbarEl = document.getElementById("actionbar") as HTMLDivElement;
 const deadEl = document.getElementById("dead-overlay") as HTMLDivElement;
 const deadReasonEl = document.getElementById("dead-reason")!;
 const deadEloEl = document.getElementById("dead-elo")!;
@@ -119,7 +122,7 @@ async function chooseName(): Promise<{ name: string; spawnMode: EntryMode }> {
 const registry = new PieceRegistry(STANDARD_PIECES);
 
 const app = new Application();
-await app.init({ background: "#15102a", resizeTo: window, antialias: true });
+await app.init({ background: "#1c1126", resizeTo: window, antialias: true });
 document.body.appendChild(app.canvas);
 await preloadPieceTextures();
 
@@ -150,8 +153,13 @@ conn.onDead = (info) => {
   legalTargets = new Set();
   deadEl.style.display = "flex";
   deadReasonEl.textContent = `${info.reason} by ${info.killerName} (ELO ${info.killerElo})`;
-  const sign = info.eloDelta >= 0 ? "+" : "";
-  deadEloEl.innerHTML = `your ELO: <b style="color:${info.eloDelta < 0 ? "#ff5577" : "#88ee66"}">${info.newStats.elo} (${sign}${info.eloDelta})</b>`;
+  const eloSign = info.eloDelta >= 0 ? "+" : "";
+  const satsSign = info.satsDelta >= 0 ? "+" : "";
+  const eloColor = info.eloDelta < 0 ? "#ff5577" : "#88ee66";
+  const satsColor = info.satsDelta < 0 ? "#ff5577" : "#88ee66";
+  deadEloEl.innerHTML =
+    `ELO <b style="color:${eloColor}">${info.newStats.elo} (${eloSign}${info.eloDelta})</b>` +
+    ` · ⚡<b style="color:${satsColor}">${formatSats(info.newStats.sats)} sats (${satsSign}${formatSats(info.satsDelta)})</b>`;
   conn.onStatus("dead");
 };
 conn.onRespawned = () => {
@@ -389,9 +397,11 @@ app.ticker.add((tk) => {
         const x = ccx + dx;
         const y = ccy + dy;
         const { sx, sy } = worldToScreen(x, y);
+        // Tile fill + subtle darker border for definition.
         groundLayer
           .rect(sx - CELL / 2, sy - CELL / 2, CELL, CELL)
-          .fill({ color: tileColor(x, y) });
+          .fill({ color: tileColor(x, y) })
+          .stroke({ color: 0x000000, alpha: 0.18, width: 1 });
       }
     }
   }
@@ -568,7 +578,7 @@ function renderCompass(): void {
     const dist = Math.round(Math.hypot(dxW, dyW));
     const eloTxt = `ELO ${a.elo}${a.dead ? " · DEAD" : ""}`;
     const lbl = new Text({
-      text: `${a.name} · ${eloTxt} · ${dist}`,
+      text: `${a.name} · ${eloTxt} · ⚡${formatSats(a.sats)} · ${dist}`,
       style: { fontSize: 11, fill: 0xffffff, stroke: { color: 0x000000, width: 3 } },
     });
     lbl.anchor.set(0.5, 1.4);
@@ -599,9 +609,15 @@ function renderHud(): void {
   const s = conn.stats;
 
   nameEl.textContent = conn.self.name;
-  statsEl.textContent = s
-    ? `ELO ${s.elo} · W ${s.wins}/L ${s.losses} · ${alive} pieces · ${enemyCount} enemies online`
-    : `${alive} pieces · ${enemyCount} enemies online`;
+  if (conn.self.spectator) {
+    statsEl.textContent = `spectator · ${enemyCount} armies online`;
+  } else if (s) {
+    statsEl.innerHTML =
+      `ELO ${s.elo} · <span style="color:#ffd86b">⚡${formatSats(s.sats)} sats</span> · ` +
+      `W ${s.wins}/L ${s.losses} · ${alive} pieces · ${enemyCount} enemies online`;
+  } else {
+    statsEl.textContent = `${alive} pieces · ${enemyCount} enemies online`;
+  }
 
   // Contextual bottom hint.
   let hint = "click a piece to act";
@@ -634,33 +650,53 @@ function makePieceNode(piece: Piece, myArmyId: string): Container {
   const isMine = piece.owner === myArmyId;
   const armyColor = parseColor(piece.color);
 
-  // Faint colored backdrop so the army is identifiable at low zoom / from far.
-  const backdrop = new Graphics()
-    .circle(0, 0, CELL * 0.42)
-    .fill({ color: armyColor, alpha: 0.22 });
-  c.addChild(backdrop);
+  // Drop shadow at the piece's "feet" so it pops off the tile.
+  const shadow = new Graphics()
+    .ellipse(0, CELL * 0.30, CELL * 0.36, CELL * 0.08)
+    .fill({ color: 0x000000, alpha: 0.45 });
+  c.addChild(shadow);
+
+  // Solid army-colour coaster behind the piece. Opaque centre + glow halo.
+  const halo = new Graphics()
+    .circle(0, 0, CELL * 0.5)
+    .fill({ color: armyColor, alpha: 0.18 });
+  c.addChild(halo);
+  const disc = new Graphics()
+    .circle(0, 0, CELL * 0.36)
+    .fill({ color: armyColor, alpha: 0.9 })
+    .stroke({ color: 0x000000, alpha: 0.85, width: 2 });
+  c.addChild(disc);
 
   // Royal halo for the king.
   if (piece.type === "king") {
     const crown = new Graphics()
-      .circle(0, 0, CELL * 0.5)
-      .stroke({ color: 0xffd86b, width: 2, alpha: 0.85 });
+      .circle(0, 0, CELL * 0.52)
+      .stroke({ color: 0xffd86b, width: 3, alpha: 0.95 });
     c.addChild(crown);
   }
 
-  // Vector piece: white fill in the SVG, tinted to the army color. Black
-  // outline in the SVG is preserved through tint (black × anything = black).
+  // Vector silhouette. We render two passes for crispness: a black outline
+  // pass (tint black, slightly larger) and a white-tinted top pass for the
+  // body. The SVG already has a thin outline, but layering this way lets
+  // the piece read on any tile colour.
   const tex = pieceTextures[piece.type];
   if (tex) {
+    const outline = new Sprite(tex);
+    outline.anchor.set(0.5);
+    outline.width = CELL * 0.92;
+    outline.height = CELL * 0.92;
+    outline.tint = 0x000000;
+    c.addChild(outline);
+
     const sprite = new Sprite(tex);
     sprite.anchor.set(0.5);
-    // Force the rendered size independent of how Pixi rasterized the SVG.
-    sprite.width = CELL * 0.85;
-    sprite.height = CELL * 0.85;
-    sprite.tint = armyColor;
+    sprite.width = CELL * 0.86;
+    sprite.height = CELL * 0.86;
+    // Use white for the body so the SVG's own outline does the colour work,
+    // and the piece looks like a porcelain figure on a coloured base.
+    sprite.tint = 0xffffff;
     c.addChild(sprite);
   } else {
-    // Fallback if texture missing.
     const t = new Text({
       text: "?",
       style: { fontFamily: "serif", fontSize: CELL * 0.6, fill: 0xffffff },
@@ -669,11 +705,11 @@ function makePieceNode(piece: Piece, myArmyId: string): Container {
     c.addChild(t);
   }
 
-  // Selection-team ring (own pieces): bright white outline, larger for visibility.
+  // Own-team ring: bright white outer ring, slightly outside the disc.
   if (isMine) {
     const ring = new Graphics()
-      .circle(0, 0, CELL * 0.46)
-      .stroke({ color: 0xffffff, width: 2, alpha: 0.7 });
+      .circle(0, 0, CELL * 0.44)
+      .stroke({ color: 0xffffff, width: 2, alpha: 0.95 });
     c.addChild(ring);
   }
   return c;
@@ -681,6 +717,14 @@ function makePieceNode(piece: Piece, myArmyId: string): Container {
 
 function parseColor(hex: string): number {
   return parseInt(hex.replace("#", ""), 16);
+}
+
+/** Format a sat count compactly: 12,345 / 1.2k / 3.4M */
+function formatSats(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 10_000) return `${(n / 1_000).toFixed(1)}k`;
+  return n.toLocaleString();
 }
 
 interface Flash {
@@ -731,20 +775,28 @@ const SKILL_KIT: Record<string, SkillSlot[]> = {
   ],
 };
 
+interface MockItem { id: string; icon: string; name: string; key: string; count: number }
+const MOCK_ITEMS: MockItem[] = [
+  { id: "teleport",   icon: "✦", name: "Teleport scroll (coming)", key: "T", count: 0 },
+  { id: "shield",     icon: "🛡", name: "Shield charge (coming)",   key: "H", count: 0 },
+  { id: "cd-reset",   icon: "⟳", name: "Cooldown reset (coming)",   key: "R", count: 0 },
+  { id: "spyglass",   icon: "🔭", name: "Spyglass (coming)",        key: "Y", count: 0 },
+];
+
 function renderSkillbar(): void {
   if (selectedPiece === null) {
-    skillbarEl.style.display = "none";
+    actionbarEl.classList.remove("visible");
     return;
   }
   const piece = conn.pieces.get(selectedPiece);
   if (!piece || piece.owner !== conn.self?.armyId) {
-    skillbarEl.style.display = "none";
+    actionbarEl.classList.remove("visible");
     return;
   }
   const kit = SKILL_KIT[piece.type] ?? [];
-  const html = kit
+  const skillsHtml = kit
     .map((s) => {
-      const cls = "skill" + (s.live ? "" : " locked");
+      const cls = "slot skill" + (s.live ? "" : " locked");
       return `<div class="${cls}" title="${s.name}">
         <span class="name">${s.name}</span>
         <span>${s.icon}</span>
@@ -752,8 +804,24 @@ function renderSkillbar(): void {
       </div>`;
     })
     .join("");
-  if (html !== skillbarEl.innerHTML) skillbarEl.innerHTML = html;
-  skillbarEl.style.display = "flex";
+  const itemsHtml = MOCK_ITEMS
+    .map((it) => {
+      const cls = "slot item locked";
+      return `<div class="${cls}" title="${it.name}">
+        <span class="name">${it.name}</span>
+        <span>${it.icon}</span>
+        <span class="key">${it.key}</span>
+      </div>`;
+    })
+    .join("");
+  if (skillsHtml !== skillbarEl.innerHTML) skillbarEl.innerHTML = skillsHtml;
+  if (itemsHtml !== itembarEl.innerHTML) itembarEl.innerHTML = itemsHtml;
+
+  // Tile under the selected piece + mock effect string.
+  const t = tileTypeAt(piece.x, piece.y);
+  const def = TILE_DEFS[t];
+  tileinfoEl.innerHTML = `Standing on <b>${def.label}</b> — ${def.effect}`;
+  actionbarEl.classList.add("visible");
 }
 
 function spawnCaptureFlash(x: number, y: number): void {

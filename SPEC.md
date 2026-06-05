@@ -112,9 +112,80 @@ Server validates: ownership, cooldown, range, mana, line-of-sight. Broadcasts
 - **Classical** — standard 8 back-rank + 8 pawns, facing one cardinal.
 - **Blob** — same 16 pieces, randomly scattered in a 5x5 area. No formation,
   pawns still face the army's forward.
+- **Spectator** — no army at all. Pure observer with free camera + roster
+  compass. Server only accepts `focus` and `ping` from spectator sessions.
 
 Chosen at entry screen, persisted in `localStorage`. Server respects it on every
 respawn for that player.
+
+## Movement cadence (shipped)
+
+- **Combat cooldown** (`WORLD.pieceCooldownMs`, 6 s) — applied when an enemy
+  piece sits within `combatRadius` (12 tiles) of the destination.
+- **Travel cooldown** (`WORLD.travelCooldownMs`, 1.5 s) — applied when no
+  enemy is nearby. Armies sprint across empty space, slow to a tactical pace
+  on contact.
+- **Spawn distance** — new players land ~8 tiles from a random existing army
+  (close enough to start fighting within a few moves).
+
+## Tile types (shipped, mock effects)
+
+Light squares are a uniform parchment cream — they carry the chess rhythm.
+Dark squares draw a type from a (x, y) hash, so the world looks identical to
+every client without server-side terrain data. Effects are currently
+**visual only**; the HUD surfaces them so players already see what each tile
+will do once wired.
+
+| Type | Colour | Mock effect |
+|---|---|---|
+| Parchment | cream | neutral light square |
+| Dusk | dusky plum | neutral dark square |
+| Champagne | warm gold | −1 cooldown · pieces sprint |
+| Lavender Stone | violet stone | +1 defense · pieces hold ground |
+| Teal Mist | deep teal | passable but slow · +2 cooldown |
+| Midnight Moss | dark forest | concealed · enemy can't see in |
+| Candy Shrine | hot pink + gold | blesses king (heal mock) |
+| Molten Amber | sat-orange ember | burns! piece takes damage |
+| Absinthe | toxic green | slows + poisons enemies |
+
+Server still owns gameplay truth; wiring tile effects = `tryMove` consults
+`tileTypeAt(toX, toY)` and applies modifiers.
+
+## Sats economy (shipped MVP, no Lightning yet)
+
+- Each player starts with **10,000 sats** (per name, persisted in
+  `stats.json`).
+- On king capture or checkmate, killer takes **25 %** of the victim's sats
+  (minimum **500 sats**). Victim loses the same amount.
+- HUD always shows your sats. Compass labels show every enemy's sats.
+- Dead overlay calls out both `ELO delta` and `sats delta`.
+
+Real Lightning integration (deposit invoices, payouts, altars) deferred to
+the BTC altar section.
+
+## Skin sets (descriptions only)
+
+See `SKINS.md` at repo root. Seven full skin sets are described for an AI
+image generator: Wonderland Royals, Cypherpunk Sats, Cosmic Whales,
+Renaissance Marble, Cyber-Tarot, Edo Inkbrush, Sat Beast (BTC-flagship).
+Each set lists every piece (pawn → king) and the visual treatment that
+makes the silhouette readable when tinted with army colour at runtime.
+
+## Bots + autonomous testing (shipped)
+
+`packages/bots/` ships an autonomous bot class + CLI. Each bot:
+
+1. WebSocket-joins the server like a normal client.
+2. Replicates nearby pieces locally.
+3. On every tick scores `(piece, move)` pairs across every ready piece using
+   the same `legalMovesPlaneFiltered` the human client uses. Captures are
+   weighted by victim value; proximity to enemy king nudges pieces inward;
+   king-tuck penalty keeps the royal safe; a "patience bonus" rotates moves
+   across the army.
+4. Sends one move per tick so the action stays observable.
+
+Run: `npm run bots -- 4` spawns 4 bots. Combined with `npm run share`, the
+game becomes an instant arena you can watch from a spectator browser tab.
 
 ## Planned — paid tier (NOT yet shipped)
 
@@ -326,6 +397,16 @@ Single source of truth for everything we've discussed. Status legend:
 | ✅ | Stakes | 30s dead overlay + respawn | server handleArmyDeath |
 | ✅ | Spawn | Classical (8+8) layout | placeClassicalSetup |
 | ✅ | Spawn | Blob (random scatter) layout | placeBlobSetup |
+| ✅ | Spawn | Spectator mode (no army) | handleSpectatorJoin |
+| ✅ | Spawn | Close-spawn vs nearest army (~8 tiles) | findClearSpawn |
+| ✅ | Core | Travel vs combat cooldown (1.5 s / 6 s, radius 12) | enemyWithin |
+| ✅ | World | Tile types with mock effects (Wonderland palette) | iso.ts |
+| ✅ | Stakes | Sats starter grant + 25 % kill transfer | stats.ts applyKill |
+| ✅ | Bots | Autonomous bot workspace (`npm run bots -- N`) | packages/bots |
+| ✅ | UX | Vector pieces (Lichess Cburnett) + tinting | client/public/pieces |
+| ✅ | UX | Move tween + capture flash | main.ts ticker |
+| ✅ | UX | Skill panel scaffold + mock items + tile-under-piece | renderSkillbar |
+| ✅ | UX | Wonderland-palette tile system (light uniform, dark varied) | iso.ts |
 | ✅ | UX | Entry screen + name persistence | localStorage |
 | ✅ | UX | Compass to enemy + G-jump | roster broadcast |
 | ✅ | UX | CHECK red border + pulse | renderCompass |
@@ -339,7 +420,6 @@ Single source of truth for everything we've discussed. Status legend:
 | 🚧 | Infra | AFK kick (90s warn, 120s drop) | |
 | 🚧 | 🧪 | Engine unit tests (vitest) | |
 | 🚧 | 🧪 | Server integration tests | |
-| 🚧 | 🧪 | Autonomous bots workspace | `npm run bots -- 4` |
 | 📋 | Skill | Full per-piece skill kits | SPEC: skills section, DOTA-style |
 | 📋 | Skill | HP / mana / regen on Piece | couples with skills |
 | 📋 | Shop | Gold per capture + persistence | extend PlayerStats |
@@ -350,8 +430,8 @@ Single source of truth for everything we've discussed. Status legend:
 | 📋 | UX | Promote-choice modal (knight/bishop/rook/queen) | replace auto-queen |
 | 📋 | UX | King danger map toggle | highlight enemy-attacked squares |
 | 📋 | UX | Replay last kill clip | |
-| 📋 | World | Persistent terrain (rubble, healing, hazard tiles) | indexed by zone |
-| 📋 | World | Spectator mode (no army) | |
+| 📋 | World | Wire tile effects to gameplay (cooldown / damage / heal / vision) | iso.ts already exposes types |
+| 📋 | World | Persistent terrain (rubble, hazard tiles, player-placed) | indexed by zone |
 | 📋 | World | **Game-master AI agent** | LLM/heuristic watches global state, drops buffs or items on losing players (anti-snowball), buffs popular players (anti-stagnation), narrates events. Toggle per-server. Bias config: chaos/fairness/drama. |
 | 📋 | AI | **AI player interface** | Standardized API so external LLMs (Claude, GPT, custom) can join as players. See "AI player interface" section. |
 | 📋 | AI | **MCP server** | Wrap AI player interface as MCP tools so Claude Code / Claude Desktop can play directly. |

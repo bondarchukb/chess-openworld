@@ -21,6 +21,7 @@ export interface RosterEntry {
   spawnY: number;
   inCheck: boolean;
   elo: number;
+  sats: number;
   dead: boolean;
 }
 
@@ -29,6 +30,7 @@ export interface DeadInfo {
   killerName: string;
   killerElo: number;
   eloDelta: number;
+  satsDelta: number;
   newStats: PlayerStats;
   respawnAt: number;
 }
@@ -113,6 +115,7 @@ export class Connection {
           killerName: msg.killerName,
           killerElo: msg.killerElo,
           eloDelta: msg.eloDelta,
+          satsDelta: msg.satsDelta,
           newStats: msg.newStats,
           respawnAt: msg.respawnAt,
         };

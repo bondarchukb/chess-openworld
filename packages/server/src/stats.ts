@@ -11,17 +11,24 @@ import { existsSync } from "node:fs";
 
 export interface PlayerStats {
   elo: number;
-  wins: number;   // kills of an enemy king (causing wipe)
-  losses: number; // your king was captured / mated
-  kills: number;  // pieces captured (any type)
-  deaths: number; // pieces of yours that got captured
+  wins: number;
+  losses: number;
+  kills: number;
+  deaths: number;
+  /** Lightning sats balance. Starter grant + earn-on-kill. */
+  sats: number;
 }
 
 export const STARTING_ELO = 1000;
 export const ELO_K = 32;
+export const STARTING_SATS = 10_000;
+/** On a king kill / mate, killer takes this fraction of victim's current sats. */
+export const KILL_SATS_SHARE = 0.25;
+/** Minimum sats a kill awards even if the victim is broke. */
+export const KILL_SATS_MIN = 500;
 
 export function newStats(): PlayerStats {
-  return { elo: STARTING_ELO, wins: 0, losses: 0, kills: 0, deaths: 0 };
+  return { elo: STARTING_ELO, wins: 0, losses: 0, kills: 0, deaths: 0, sats: STARTING_SATS };
 }
 
 /** Standard ELO update for a 1v1 result (1 = winner, 0 = loser). */
@@ -42,8 +49,12 @@ export class StatsStore {
     return s;
   }
 
-  /** Apply a kill: winner kills loser. Mutates both. Returns elo deltas. */
-  applyKill(winnerName: string, loserName: string): { winnerDelta: number; loserDelta: number } {
+  /** Apply a kill: winner kills loser. Mutates both. Returns ELO + sats deltas. */
+  applyKill(winnerName: string, loserName: string): {
+    winnerDelta: number;
+    loserDelta: number;
+    satsTransferred: number;
+  } {
     const winner = this.get(winnerName);
     const loser = this.get(loserName);
     const wd = eloDelta(winner.elo, loser.elo, 1);
@@ -52,7 +63,11 @@ export class StatsStore {
     loser.elo += ld;
     winner.wins += 1;
     loser.losses += 1;
-    return { winnerDelta: wd, loserDelta: ld };
+    const take = Math.max(KILL_SATS_MIN, Math.floor(loser.sats * KILL_SATS_SHARE));
+    const actually = Math.min(take, loser.sats);
+    loser.sats -= actually;
+    winner.sats += actually;
+    return { winnerDelta: wd, loserDelta: ld, satsTransferred: actually };
   }
 
   serialize(): Record<string, PlayerStats> {
@@ -69,6 +84,7 @@ export class StatsStore {
         losses: s.losses ?? 0,
         kills: s.kills ?? 0,
         deaths: s.deaths ?? 0,
+        sats: s.sats ?? STARTING_SATS,
       });
     }
   }
