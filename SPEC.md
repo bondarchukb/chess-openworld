@@ -308,3 +308,76 @@ shows the UI and sends intents.
 - Persistent terrain (rubble, healing tiles) — stored in world, also indexed by zone.
 - Spectator mode (join without spawning an army, free camera).
 - Zone hand-off across processes (the actual MMO sharding move).
+
+## Feature backlog
+
+Single source of truth for everything we've discussed. Status legend:
+✅ shipped · 🚧 in plan (PLAN.md) · 📋 backlog · 💰 paid tier · 🧪 testing
+
+| Status | Area | Feature | Notes |
+|---|---|---|---|
+| ✅ | Core | Infinite plane + zone interest | server.ts step() |
+| ✅ | Core | Standard chess movement on plane | engine/plane.ts |
+| ✅ | Core | Check enforcement + mate detection | world.tryMove |
+| ✅ | Core | Pawn double-step (`hasMoved`) | engine/plane.ts |
+| ✅ | Core | Real-time piece cooldown (6s) | WORLD.pieceCooldownMs |
+| ✅ | Skill | Pawn Reorient (20s CD) | hotkeys 1234 |
+| ✅ | Stakes | ELO + W/L/K/D persistence | stats.json |
+| ✅ | Stakes | 30s dead overlay + respawn | server handleArmyDeath |
+| ✅ | Spawn | Classical (8+8) layout | placeClassicalSetup |
+| ✅ | Spawn | Blob (random scatter) layout | placeBlobSetup |
+| ✅ | UX | Entry screen + name persistence | localStorage |
+| ✅ | UX | Compass to enemy + G-jump | roster broadcast |
+| ✅ | UX | CHECK red border + pulse | renderCompass |
+| ✅ | Infra | cloudflared share script | `npm run share` |
+| 🚧 | UX | Audio v1 (move/capture/check/death) | Web Audio synth |
+| 🚧 | UX | Kill feed + killer feedback flash | |
+| 🚧 | Core | Pawn promotion (after 8 tiles) | auto-queen first, modal later |
+| 🚧 | Core | Stalemate → forced respawn (no ELO) | |
+| 🚧 | UX | First-time tutorial bar | |
+| 🚧 | UX | Own-piece visual distinguisher | |
+| 🚧 | Infra | AFK kick (90s warn, 120s drop) | |
+| 🚧 | 🧪 | Engine unit tests (vitest) | |
+| 🚧 | 🧪 | Server integration tests | |
+| 🚧 | 🧪 | Autonomous bots workspace | `npm run bots -- 4` |
+| 📋 | Skill | Full per-piece skill kits | SPEC: skills section, DOTA-style |
+| 📋 | Skill | HP / mana / regen on Piece | couples with skills |
+| 📋 | Shop | Gold per capture + persistence | extend PlayerStats |
+| 📋 | Shop | Pre-game / pre-respawn shop UI | replaces plain countdown |
+| 📋 | Shop | Item catalog (40+ items, see Shop section) | mobility/def/off/vision/etc |
+| 📋 | UX | Mobile tap-to-move + pinch zoom | |
+| 📋 | UX | Zone chat (3x3 neighborhood) | |
+| 📋 | UX | Promote-choice modal (knight/bishop/rook/queen) | replace auto-queen |
+| 📋 | UX | King danger map toggle | highlight enemy-attacked squares |
+| 📋 | UX | Replay last kill clip | |
+| 📋 | World | Persistent terrain (rubble, healing, hazard tiles) | indexed by zone |
+| 📋 | World | Spectator mode (no army) | |
+| 📋 | World | **Game-master AI agent** | LLM/heuristic watches global state, drops buffs or items on losing players (anti-snowball), buffs popular players (anti-stagnation), narrates events. Toggle per-server. Bias config: chaos/fairness/drama. |
+| 📋 | World | Persistent army on disconnect (60s grace) | |
+| 📋 | Infra | Accounts (replace localStorage-only name) | |
+| 📋 | Infra | Zone hand-off across processes | the actual MMO sharding |
+| 📋 | Infra | Deploy to Fly/Render with named tunnel | stable URL |
+| 💰 | Spawn | Custom spawn layout designer | 100g unlock |
+| 💰 | Mob | Custom piece builder (shape/move/attack/HP/mana/skills) | 250g unlock + per-piece point budget |
+| 💰 | Cosmetic | Premium skin packs | beyond free skin pack |
+| 💰 | Cosmetic | Custom death taunts / victory dances | |
+
+### Notable backlog item: Game-master agent
+
+A bot (LLM-driven or heuristic) that subscribes to the same event stream
+clients do (roster, deltas, deaths, ELO swings) and reacts:
+
+- **Anti-snowball**: if one army stomps 3+ kills in a row without dying,
+  drop a buff (shield charges, teleport scrolls) on the most-killed
+  opponent.
+- **Anti-stagnation**: if no captures in N minutes, spawn a neutral
+  "treasure piece" between idle players; whoever captures it gets gold.
+- **Drama narration**: post short text events ("Aleksey's queen mated
+  PawnLord's king with a knight sac!") into the kill feed.
+- **Bias dial**: server-config — `chaos` (random buffs to random players),
+  `fair` (balance ELO gaps), `dramatic` (favor close fights, punish runaways).
+
+Implementation sketch: extra WS client connecting as `__GM__` (server
+recognizes the reserved name, doesn't spawn an army), receives full
+broadcast, sends item-grant messages via a privileged admin channel.
+Server validates grants stay within per-tick / per-player caps.
