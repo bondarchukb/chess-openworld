@@ -28,6 +28,27 @@ export const WORLD = {
   maxRideRange: 32,
 } as const;
 
+/** Sat cost / kill bounty per piece type. Capturing a piece pays the
+ * captured piece's value from victim → killer. Spawning an army costs the
+ * sum of every piece's value up front. */
+export const PIECE_SATS: Record<string, number> = {
+  pawn: 100,
+  knight: 300,
+  bishop: 300,
+  rook: 500,
+  queen: 900,
+  king: 2500,
+};
+
+/** Sum of PIECE_SATS for the standard 16-piece army (8P 2N 2B 2R 1Q 1K). */
+export const ARMY_SATS_COST =
+  8 * PIECE_SATS.pawn! +
+  2 * PIECE_SATS.knight! +
+  2 * PIECE_SATS.bishop! +
+  2 * PIECE_SATS.rook! +
+  PIECE_SATS.queen! +
+  PIECE_SATS.king!;
+
 export type PieceId = string;
 export type ArmyId = string;
 

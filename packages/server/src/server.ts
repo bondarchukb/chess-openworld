@@ -139,6 +139,9 @@ export class GameServer {
   }
 
   private handleJoin(socket: WebSocket, name: string, spawnMode: "classical" | "blob"): Session {
+    // Charge spawn cost up front. Broke players still get an army (partial
+    // charge) — losing pieces will be the real penalty.
+    this.stats.chargeSpawn(name || "anon");
     const army = this.world.spawnArmy(name || "anon", spawnMode);
     const session: Session = {
       armyId: army.id,
@@ -223,12 +226,22 @@ export class GameServer {
           send(session.socket, { t: "error", message: res.reason });
           return;
         }
+        let rosterDirty = res.checkChanged || res.matedArmies.length > 0;
+        // Per-piece sat transfer for any non-king capture.
+        if (res.captured && !res.capturedKingOf) {
+          const victimArmy = this.world.getArmy(res.captured.owner);
+          if (victimArmy) {
+            this.stats.transferCapture(session.name, victimArmy.name, res.captured.type);
+            rosterDirty = true;
+            void this.persistStats();
+          }
+        }
         if (res.capturedKingOf) this.handleArmyDeath(res.capturedKingOf, "king captured", session);
         for (const armyId of res.matedArmies) {
-          if (armyId === session.armyId) continue; // can't mate yourself credibly
+          if (armyId === session.armyId) continue;
           this.handleArmyDeath(armyId, "checkmate", session);
         }
-        if (res.checkChanged || res.matedArmies.length > 0) this.broadcastRoster();
+        if (rosterDirty) this.broadcastRoster();
         break;
       }
       case "reorient": {
@@ -302,6 +315,8 @@ export class GameServer {
     this.respawnTimers.delete(armyId);
     const army = this.world.getArmy(armyId);
     if (!army) return;
+    // Charge the spawn cost again for the new army.
+    this.stats.chargeSpawn(army.name);
     this.world.respawnArmy(army);
     const victimSession = [...this.sessions].find((s) => s.armyId === armyId);
     if (victimSession) {

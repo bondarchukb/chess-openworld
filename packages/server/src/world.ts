@@ -169,7 +169,13 @@ export class World {
     toY: number,
     nowMs: number
   ):
-    | { ok: true; capturedKingOf: ArmyId | null; matedArmies: ArmyId[]; checkChanged: boolean }
+    | {
+        ok: true;
+        capturedKingOf: ArmyId | null;
+        captured: { type: string; owner: ArmyId } | null;
+        matedArmies: ArmyId[];
+        checkChanged: boolean;
+      }
     | { ok: false; reason: string } {
     const piece = this.pieces.get(pieceId);
     if (!piece) return { ok: false, reason: "no such piece" };
@@ -200,14 +206,15 @@ export class World {
     // 3) Apply move.
     const target = this.pieceAtXY(toX, toY);
     let capturedKingOf: ArmyId | null = null;
+    let captured: { type: string; owner: ArmyId } | null = null;
     if (target) {
       if (target.owner === piece.owner) return { ok: false, reason: "blocked by own piece" };
       if (target.type === "king") capturedKingOf = target.owner;
+      captured = { type: target.type, owner: target.owner };
       this.removePiece(target.id);
     }
     this.movePieceTo(piece, toX, toY);
     piece.hasMoved = true;
-    // Travel cooldown if no enemy nearby after the move; combat cooldown otherwise.
     const inCombat = this.enemyWithin(piece.owner, toX, toY, WORLD.combatRadius);
     piece.readyAt = nowMs + (inCombat ? WORLD.pieceCooldownMs : WORLD.travelCooldownMs);
 
@@ -225,7 +232,7 @@ export class World {
       }
     }
 
-    return { ok: true, capturedKingOf, matedArmies, checkChanged };
+    return { ok: true, capturedKingOf, captured, matedArmies, checkChanged };
   }
 
   /** Public: does `armyId`'s king currently sit on an attacked square? */

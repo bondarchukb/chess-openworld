@@ -153,12 +153,34 @@ Server still owns gameplay truth; wiring tile effects = `tryMove` consults
 
 ## Sats economy (shipped MVP, no Lightning yet)
 
-- Each player starts with **10,000 sats** (per name, persisted in
-  `stats.json`).
-- On king capture or checkmate, killer takes **25 %** of the victim's sats
-  (minimum **500 sats**). Victim loses the same amount.
-- HUD always shows your sats. Compass labels show every enemy's sats.
-- Dead overlay calls out both `ELO delta` and `sats delta`.
+Every piece on the board is denominated in real sats. You're not just losing
+ELO when a piece dies — you're paying the killer its value.
+
+**Per-piece value** (`PIECE_SATS` in protocol):
+
+| Piece | Cost / kill bounty |
+|---|---|
+| Pawn | 100 sats |
+| Knight | 300 |
+| Bishop | 300 |
+| Rook | 500 |
+| Queen | 900 |
+| King | 2,500 |
+
+**Army spawn cost** (`ARMY_SATS_COST`) = 8·P + 2·N + 2·B + 2·R + Q + K =
+**6,400 sats**. Deducted on every join *and* every respawn. If you're broke
+the server still spawns you (partial charge) — you just can't afford to
+lose anything.
+
+**Captures**
+
+- On any non-king capture, server transfers the captured piece's sat value
+  from victim → killer.
+- On king capture / checkmate, killer also drains the victim's **remaining
+  sats** plus a flat king-bounty (2,500). The jackpot moment.
+
+**Starter grant**: `STARTING_SATS = ARMY_SATS_COST × 4 ≈ 26,000` so a new
+player has roughly four respawns to find their footing.
 
 Real Lightning integration (deposit invoices, payouts, altars) deferred to
 the BTC altar section.

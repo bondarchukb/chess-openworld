@@ -8,6 +8,7 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { ARMY_SATS_COST, PIECE_SATS } from "@chess-openworld/protocol";
 
 export interface PlayerStats {
   elo: number;
@@ -21,11 +22,8 @@ export interface PlayerStats {
 
 export const STARTING_ELO = 1000;
 export const ELO_K = 32;
-export const STARTING_SATS = 10_000;
-/** On a king kill / mate, killer takes this fraction of victim's current sats. */
-export const KILL_SATS_SHARE = 0.25;
-/** Minimum sats a kill awards even if the victim is broke. */
-export const KILL_SATS_MIN = 500;
+/** Starter grant: enough to spawn ~4 armies before scoring any kills. */
+export const STARTING_SATS = ARMY_SATS_COST * 4; // ~26,000 with default piece values
 
 export function newStats(): PlayerStats {
   return { elo: STARTING_ELO, wins: 0, losses: 0, kills: 0, deaths: 0, sats: STARTING_SATS };
@@ -49,7 +47,8 @@ export class StatsStore {
     return s;
   }
 
-  /** Apply a kill: winner kills loser. Mutates both. Returns ELO + sats deltas. */
+  /** King kill / mate: ELO swap + drain whatever sats the victim has left
+   * (jackpot). Per-piece captures already happened on the way here. */
   applyKill(winnerName: string, loserName: string): {
     winnerDelta: number;
     loserDelta: number;
@@ -63,11 +62,34 @@ export class StatsStore {
     loser.elo += ld;
     winner.wins += 1;
     loser.losses += 1;
-    const take = Math.max(KILL_SATS_MIN, Math.floor(loser.sats * KILL_SATS_SHARE));
-    const actually = Math.min(take, loser.sats);
-    loser.sats -= actually;
-    winner.sats += actually;
-    return { winnerDelta: wd, loserDelta: ld, satsTransferred: actually };
+    // Drain remaining sats AND credit the king's nominal value too. King
+    // capture is the jackpot moment.
+    const jackpot = loser.sats + (PIECE_SATS.king ?? 0);
+    loser.sats = 0;
+    winner.sats += jackpot;
+    return { winnerDelta: wd, loserDelta: ld, satsTransferred: jackpot };
+  }
+
+  /** Per-piece capture: move the piece's sat value from victim to killer. */
+  transferCapture(killerName: string, victimName: string, pieceType: string): number {
+    const killer = this.get(killerName);
+    const victim = this.get(victimName);
+    const fullValue = PIECE_SATS[pieceType] ?? 0;
+    const actually = Math.min(fullValue, victim.sats);
+    victim.sats -= actually;
+    killer.sats += actually;
+    killer.kills += 1;
+    victim.deaths += 1;
+    return actually;
+  }
+
+  /** Deduct the army-spawn cost. Returns the amount actually deducted (may be
+   * less than the full cost if the player is broke). */
+  chargeSpawn(name: string): number {
+    const s = this.get(name);
+    const take = Math.min(ARMY_SATS_COST, s.sats);
+    s.sats -= take;
+    return take;
   }
 
   serialize(): Record<string, PlayerStats> {
