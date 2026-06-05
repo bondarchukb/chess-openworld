@@ -1,14 +1,13 @@
 /**
- * The networking + simulation layer.
+ * Networking + per-tick interest streaming for the open-plane chess world.
  *
- * Per tick, for every connected player we:
- *   1. compute their interest set (the ~9 zones around them),
- *   2. diff it against what they last knew, and
- *   3. send only the *changes* (enter / leave / move).
+ * Per tick, for each session we:
+ *   1. compute the 3x3 zone neighborhood around the player's camera focus
+ *      (defaults to their army's spawn until they pan),
+ *   2. diff vs what the client last knew (enter / move / leave),
+ *   3. send only the changes.
  *
- * That diff is "interest management" — the single technique that lets an MMO
- * show thousands of entities without sending the whole world to everyone. It
- * is the reason we don't just broadcast global state.
+ * Movement is real-time with per-piece cooldown enforced in world.tryMove.
  */
 
 import { createServer, type Server as HttpServer } from "node:http";
@@ -17,45 +16,45 @@ import {
   WORLD,
   interestZones,
   zoneOf,
+  type ArmyId,
   type ClientMessage,
-  type Entity,
-  type EntityId,
+  type Piece,
+  type PieceId,
   type ServerMessage,
 } from "@chess-openworld/protocol";
 import { World } from "./world.js";
+import { StatsStore, saveStats } from "./stats.js";
 
 interface Session {
-  playerId: EntityId;
+  armyId: ArmyId;
   socket: WebSocket;
   name: string;
-  /** What this client currently believes is in its interest set. */
-  known: Map<EntityId, { x: number; y: number }>;
-  lastBoardVersion: number;
-  /** Where the player's camera is looking, if panned away from the avatar.
-   * Interest is streamed around the avatar AND this point. */
-  focus: { x: number; y: number } | null;
-  /** Latest requested step; applied at most once per tick (authoritative
-   * speed limit — prevents clients moving many tiles by spamming messages). */
-  pendingMove: { dx: number; dy: number } | null;
+  /** Last known pieces in interest set (id -> last sent {x,y,readyAt,forward}). */
+  known: Map<PieceId, { x: number; y: number; readyAt: number; forwardKey: string }>;
+  focus: { x: number; y: number };
+  /** Pieces whose forward changed since the last tick — forces a forward push. */
+  forwardDirty: Set<PieceId>;
 }
 
 export interface ServerOptions {
   port: number;
-  /** Called once per tick after deltas are sent (used by tests). */
+  /** Where stats.json lives. Server auto-saves stats on every death. */
+  statsPath?: string;
   onTick?: (tick: number) => void;
 }
 
 export class GameServer {
   readonly world = new World();
+  readonly stats = new StatsStore();
   private http: HttpServer;
   private wss: WebSocketServer;
   private sessions = new Set<Session>();
   private timer?: ReturnType<typeof setInterval>;
   private tick = 0;
+  /** Per-army pending respawn timers (so a player who disconnects mid-death doesn't strand a timer). */
+  private respawnTimers = new Map<ArmyId, ReturnType<typeof setTimeout>>();
 
   constructor(private opts: ServerOptions) {
-    // An HTTP server fronts the websocket so hosts (Render/Fly/Railway) get a
-    // health endpoint, and WS upgrades share the same port.
     this.http = createServer((req, res) => {
       if (req.url === "/health" || req.url === "/") {
         res.writeHead(200, { "content-type": "text/plain" });
@@ -97,7 +96,7 @@ export class GameServer {
 
       if (msg.t === "join") {
         if (session) return;
-        session = this.handleJoin(socket, msg.name);
+        session = this.handleJoin(socket, msg.name, msg.spawnMode ?? "classical");
         return;
       }
       if (!session) return send(socket, { t: "error", message: "join first" });
@@ -106,90 +105,101 @@ export class GameServer {
 
     socket.on("close", () => {
       if (session) {
-        this.world.removeEntity(session.playerId);
+        const timer = this.respawnTimers.get(session.armyId);
+        if (timer) {
+          clearTimeout(timer);
+          this.respawnTimers.delete(session.armyId);
+        }
+        this.world.removeArmy(session.armyId);
         this.sessions.delete(session);
+        this.broadcastRoster();
       }
     });
   }
 
-  private handleJoin(socket: WebSocket, name: string): Session {
-    // Spawn near the shared board so new players find the action.
-    const spawnX = this.world.boardOrigin.x + randInt(-6, 6);
-    const spawnY = this.world.boardOrigin.y + randInt(-6, 6);
-    const player = this.world.addEntity("player", spawnX, spawnY, name || "anon");
+  private broadcastRoster(): void {
+    const armies = [...this.world.armies.values()].map((a) => ({
+      id: a.id, name: a.name, color: a.color,
+      spawnX: a.spawnX, spawnY: a.spawnY,
+      inCheck: a.inCheck,
+      elo: this.stats.get(a.name).elo,
+      dead: a.dead,
+    }));
+    const msg: ServerMessage = { t: "roster", armies };
+    for (const s of this.sessions) send(s.socket, msg);
+  }
 
+  private handleJoin(socket: WebSocket, name: string, spawnMode: "classical" | "blob"): Session {
+    const army = this.world.spawnArmy(name || "anon", spawnMode);
     const session: Session = {
-      playerId: player.id,
+      armyId: army.id,
       socket,
-      name: player.label,
+      name: army.name,
       known: new Map(),
-      lastBoardVersion: -1,
-      focus: null,
-      pendingMove: null,
+      focus: { x: army.spawnX, y: army.spawnY },
+      forwardDirty: new Set(),
     };
     this.sessions.add(session);
 
+    const now = Date.now();
+    const stats = this.stats.get(session.name);
     send(socket, {
       t: "welcome",
-      you: { id: player.id, x: player.x, y: player.y },
+      you: {
+        armyId: army.id, name: army.name, color: army.color,
+        spawnX: army.spawnX, spawnY: army.spawnY,
+        stats,
+      },
       world: WORLD,
-      board: this.world.boardSnapshot(),
+      serverNow: now,
     });
-    // Immediate snapshot so the client can render without waiting a tick.
-    const visible = this.world.entitiesInZones(interestZones(player.x, player.y));
-    for (const e of visible) session.known.set(e.id, { x: e.x, y: e.y });
-    send(socket, { t: "snapshot", entities: visible });
-    session.lastBoardVersion = this.world.boardVersion;
+    const visible = this.world.piecesInZones(interestZones(session.focus.x, session.focus.y));
+    for (const p of visible) session.known.set(p.id, { x: p.x, y: p.y, readyAt: p.readyAt, forwardKey: forwardKey(p.forward) });
+    send(socket, { t: "snapshot", pieces: visible, serverNow: now });
+    this.broadcastRoster();
     return session;
   }
 
   private handleMessage(session: Session, msg: ClientMessage): void {
     switch (msg.t) {
-      case "move": {
-        // Buffer the latest direction; the tick applies one step (rate limit).
-        session.pendingMove = { dx: clampStep(msg.dx), dy: clampStep(msg.dy) };
+      case "pieceMove": {
+        const piece = this.world.getPiece(msg.pieceId);
+        if (!piece) return send(session.socket, { t: "error", message: "no such piece" });
+        if (piece.owner !== session.armyId) {
+          return send(session.socket, { t: "error", message: "not your piece" });
+        }
+        const army = this.world.getArmy(session.armyId);
+        if (army?.dead) return send(session.socket, { t: "error", message: "you are dead" });
+        const res = this.world.tryMove(piece.id, msg.toX, msg.toY, Date.now());
+        if (!res.ok) {
+          send(session.socket, { t: "error", message: res.reason });
+          return;
+        }
+        if (res.capturedKingOf) this.handleArmyDeath(res.capturedKingOf, "king captured", session);
+        for (const armyId of res.matedArmies) {
+          if (armyId === session.armyId) continue; // can't mate yourself credibly
+          this.handleArmyDeath(armyId, "checkmate", session);
+        }
+        if (res.checkChanged || res.matedArmies.length > 0) this.broadcastRoster();
         break;
       }
-      case "place": {
-        const p = this.world.getEntity(session.playerId);
-        if (!p) return;
-        // Don't stack a structure on an already-solid tile.
-        if (msg.kind === "building" && this.world.isSolidTile(p.x, p.y)) return;
-        this.world.addEntity(msg.kind, p.x, p.y, msg.kind, { skin: msg.skin });
-        break;
-      }
-      case "boardMove": {
-        const res = this.world.tryBoardMove(session.playerId, msg.from, msg.to, msg.promotion);
-        if (!res.ok) send(session.socket, { t: "error", message: res.reason ?? "rejected" });
-        break;
-      }
-      case "sit": {
-        const color = this.world.claimSeat(session.playerId);
-        this.world.boardVersion++; // nudge a board resync so new seats show up
-        if (!color) send(session.socket, { t: "error", message: "both seats taken — spectating" });
-        break;
-      }
-      case "newGame": {
-        const s = this.world.boardSnapshot().status;
-        if (s === "playing" || s === "check") {
-          send(session.socket, { t: "error", message: "game still in progress" });
-        } else {
-          this.world.resetBoard();
+      case "reorient": {
+        const piece = this.world.getPiece(msg.pieceId);
+        if (!piece) return send(session.socket, { t: "error", message: "no such piece" });
+        if (piece.owner !== session.armyId) {
+          return send(session.socket, { t: "error", message: "not your piece" });
+        }
+        const res = this.world.tryReorient(piece.id, msg.dir, Date.now());
+        if (!res.ok) return send(session.socket, { t: "error", message: res.reason });
+        // Mark dirty across every session that already sees this piece,
+        // so the next tick re-broadcasts the new forward vector.
+        for (const s of this.sessions) {
+          if (s.known.has(piece.id)) s.forwardDirty.add(piece.id);
         }
         break;
       }
       case "focus": {
-        const p = this.world.getEntity(session.playerId);
-        // Drop the focus once it's basically back on the avatar (following).
-        if (p && Math.abs(msg.x - p.x) <= 1 && Math.abs(msg.y - p.y) <= 1) {
-          session.focus = null;
-        } else {
-          session.focus = { x: msg.x, y: msg.y };
-        }
-        break;
-      }
-      case "chat": {
-        this.broadcastNearby(session.playerId, { t: "chat", from: session.name, text: msg.text });
+        session.focus = { x: msg.x, y: msg.y };
         break;
       }
       case "ping":
@@ -198,68 +208,117 @@ export class GameServer {
     }
   }
 
+  private handleArmyDeath(victimArmyId: ArmyId, reason: string, killer: Session): void {
+    const army = this.world.getArmy(victimArmyId);
+    if (!army) return;
+    if (army.dead) return; // already dying, ignore double-trigger
+    const victimSession = [...this.sessions].find((s) => s.armyId === victimArmyId);
+    const victimName = victimSession?.name ?? army.name;
+    const killerStatsBefore = this.stats.get(killer.name);
+    const killerEloBefore = killerStatsBefore.elo;
+    const { winnerDelta, loserDelta } = this.stats.applyKill(killer.name, victimName);
+    const victimStats = this.stats.get(victimName);
+    void winnerDelta;
+    // Wipe board pieces immediately; respawn after delay.
+    this.world.wipeArmy(victimArmyId);
+    const respawnAt = Date.now() + WORLD.respawnDelayMs;
+    if (victimSession) {
+      send(victimSession.socket, {
+        t: "dead",
+        reason,
+        killerName: killer.name,
+        killerElo: killerEloBefore,
+        eloDelta: loserDelta,
+        newStats: victimStats,
+        respawnAt,
+      });
+    }
+    // Push refreshed stats to killer too so their HUD updates.
+    send(killer.socket, {
+      t: "respawned", // reuse: just a stats refresh; client treats as no-op if alive
+      stats: this.stats.get(killer.name),
+    });
+    // Schedule respawn.
+    const existing = this.respawnTimers.get(victimArmyId);
+    if (existing) clearTimeout(existing);
+    this.respawnTimers.set(
+      victimArmyId,
+      setTimeout(() => this.completeRespawn(victimArmyId), WORLD.respawnDelayMs)
+    );
+    this.broadcastRoster();
+    void this.persistStats();
+  }
+
+  private completeRespawn(armyId: ArmyId): void {
+    this.respawnTimers.delete(armyId);
+    const army = this.world.getArmy(armyId);
+    if (!army) return;
+    this.world.respawnArmy(army);
+    const victimSession = [...this.sessions].find((s) => s.armyId === armyId);
+    if (victimSession) {
+      victimSession.focus = { x: army.spawnX, y: army.spawnY };
+      send(victimSession.socket, { t: "respawned", stats: this.stats.get(victimSession.name) });
+    }
+    this.broadcastRoster();
+  }
+
+  private async persistStats(): Promise<void> {
+    if (this.opts.statsPath) {
+      try {
+        await saveStats(this.stats, this.opts.statsPath);
+      } catch (err) {
+        console.error("stats save failed", err);
+      }
+    }
+  }
+
   // ---- the tick -------------------------------------------------------------
 
   private step(): void {
     this.tick++;
+    const now = Date.now();
     for (const session of this.sessions) {
-      const p = this.world.getEntity(session.playerId);
-      if (!p) continue;
+      const zones = interestZones(session.focus.x, session.focus.y);
+      const current = this.world.piecesInZones(zones);
+      const currentById = new Map<PieceId, Piece>(current.map((p) => [p.id, p]));
 
-      // Apply at most one buffered step this tick (authoritative speed limit).
-      if (session.pendingMove) {
-        this.world.moveEntity(session.playerId, p.x + session.pendingMove.dx, p.y + session.pendingMove.dy);
-        session.pendingMove = null;
-      }
+      const enter: Piece[] = [];
+      const move: { id: PieceId; x: number; y: number; readyAt: number }[] = [];
+      const cooldown: { id: PieceId; readyAt: number; forward?: [number, number] | null }[] = [];
+      const leave: PieceId[] = [];
 
-      // Interest = zones around the avatar, plus zones around the camera focus
-      // when the player is panning/spectating elsewhere.
-      const zones = interestZones(p.x, p.y);
-      if (session.focus) for (const z of interestZones(session.focus.x, session.focus.y)) zones.add(z);
-      const current = this.world.entitiesInZones(zones);
-      const currentById = new Map<EntityId, Entity>(current.map((e) => [e.id, e]));
-
-      const enter: Entity[] = [];
-      const move: { id: EntityId; x: number; y: number }[] = [];
-      const leave: EntityId[] = [];
-
-      for (const e of current) {
-        const prev = session.known.get(e.id);
+      for (const p of current) {
+        const prev = session.known.get(p.id);
+        const fwdKey = forwardKey(p.forward);
         if (!prev) {
-          enter.push(e);
-        } else if (prev.x !== e.x || prev.y !== e.y) {
-          move.push({ id: e.id, x: e.x, y: e.y });
+          enter.push(p);
+        } else if (prev.x !== p.x || prev.y !== p.y) {
+          move.push({ id: p.id, x: p.x, y: p.y, readyAt: p.readyAt });
+        } else {
+          const forwardChanged = session.forwardDirty.has(p.id) || prev.forwardKey !== fwdKey;
+          if (prev.readyAt !== p.readyAt || forwardChanged) {
+            const entry: { id: PieceId; readyAt: number; forward?: [number, number] | null } = {
+              id: p.id,
+              readyAt: p.readyAt,
+            };
+            if (forwardChanged) entry.forward = p.forward;
+            cooldown.push(entry);
+          }
         }
       }
       for (const id of session.known.keys()) {
         if (!currentById.has(id)) leave.push(id);
       }
 
-      if (enter.length || move.length || leave.length) {
-        send(session.socket, { t: "delta", enter, leave, move });
-        session.known = new Map(current.map((e) => [e.id, { x: e.x, y: e.y }]));
+      if (enter.length || move.length || leave.length || cooldown.length) {
+        send(session.socket, { t: "delta", enter, leave, move, cooldown, serverNow: now });
+        const next = new Map<PieceId, { x: number; y: number; readyAt: number; forwardKey: string }>();
+        for (const p of current) next.set(p.id, { x: p.x, y: p.y, readyAt: p.readyAt, forwardKey: forwardKey(p.forward) });
+        session.known = next;
       }
-
-      // Lazy board sync: only to players who can see the board and are stale.
-      if (
-        session.lastBoardVersion !== this.world.boardVersion &&
-        zones.has(zoneOf(this.world.boardOrigin.x, this.world.boardOrigin.y))
-      ) {
-        send(session.socket, { t: "board", board: this.world.boardSnapshot() });
-        session.lastBoardVersion = this.world.boardVersion;
-      }
+      session.forwardDirty.clear();
     }
     this.opts.onTick?.(this.tick);
-  }
-
-  private broadcastNearby(originId: EntityId, msg: ServerMessage): void {
-    const origin = this.world.getEntity(originId);
-    if (!origin) return;
-    const zones = interestZones(origin.x, origin.y);
-    for (const s of this.sessions) {
-      const p = this.world.getEntity(s.playerId);
-      if (p && zones.has(zoneOf(p.x, p.y))) send(s.socket, msg);
-    }
   }
 }
 
@@ -267,10 +326,9 @@ function send(socket: WebSocket, msg: ServerMessage): void {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
 }
 
-function clampStep(v: number): number {
-  return v > 1 ? 1 : v < -1 ? -1 : Math.round(v);
+function forwardKey(fwd: [number, number] | null): string {
+  return fwd ? `${fwd[0]},${fwd[1]}` : "none";
 }
 
-function randInt(lo: number, hi: number): number {
-  return Math.floor(Math.random() * (hi - lo + 1)) + lo;
-}
+// zoneOf is unused here directly, kept import for parity with old code/tests.
+void zoneOf;

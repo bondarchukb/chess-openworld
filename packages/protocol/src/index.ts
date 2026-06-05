@@ -1,126 +1,142 @@
 /**
  * Wire protocol shared between client and server.
  *
- * The whole MMO is built on these rules:
- *  - Clients send *intents* (ClientMessage). They never assert world state.
- *  - The server validates every intent and broadcasts authoritative results
- *    (ServerMessage) only to players whose interest set is affected.
- *
- * Keeping this in a shared package means client and server can never disagree
- * about the message shape — a big reason to use TypeScript end-to-end.
+ * Open-battlefield chess: infinite plane, each player owns one army of chess
+ * pieces, real-time with per-piece cooldown. No avatars, no buildings, no
+ * artifacts. The only entities are pieces.
  */
 
-/** World layout constants. A future deployment can shard zones across servers. */
 export const WORLD = {
-  /** World size in tiles. */
-  width: 192,
-  height: 192,
-  /** Zone (chunk) edge length in tiles. World is width/zoneSize zones wide. */
+  /** Zone (chunk) edge length in tiles. Used for interest streaming. */
   zoneSize: 24,
   /** Server simulation rate. */
   tickHz: 10,
+  /** Cooldown after a piece moves, in milliseconds. */
+  pieceCooldownMs: 6000,
+  /** Cooldown after a pawn reorients (long; reorient costs a real action). */
+  reorientCooldownMs: 20000,
+  /** How long the death overlay shows before an army respawns. */
+  respawnDelayMs: 30000,
+  /** Army size: standard chess setup, 16 pieces. */
+  armySize: 16,
+  /** Max ride distance for sliders on the plane (caps rook/bishop/queen). */
+  maxRideRange: 32,
 } as const;
 
-export type EntityId = string;
+export type PieceId = string;
+export type ArmyId = string;
 
-export type Color = "white" | "black";
-
-/** Kinds of things that live on a tile in the open world. */
-export type EntityKind = "player" | "piece" | "building" | "artifact";
-
-export interface Entity {
-  id: EntityId;
-  kind: EntityKind;
+export interface Piece {
+  id: PieceId;
+  owner: ArmyId;
+  /** Display color (hex int as string for JSON), e.g. "#ff5577". */
+  color: string;
+  /** Piece type id: "pawn", "knight", ... */
+  type: string;
   x: number;
   y: number;
-  /** For players: display name. For pieces: piece type id (pawn, knight, ...). */
-  label: string;
-  color?: Color;
-  /** Purely cosmetic skin id — never affects rules. */
-  skin?: string;
-}
-
-/** Authoritative state of the shared demo chess board embedded in the world. */
-export interface BoardSnapshot {
-  /** World-tile origin of the board's a1 square. */
-  originX: number;
-  originY: number;
-  /** 64 cells, row-major from rank 1; null or "color:type". */
-  cells: (string | null)[];
-  sideToMove: Color;
-  /** "playing" | "check" | "checkmate" | "stalemate" | "draw". */
-  status: string;
-  /** Player ids occupying each seat, or null if open. */
-  seatWhite: EntityId | null;
-  seatBlack: EntityId | null;
-  /** Board squares (0..63) made impassable by terrain/buildings. */
-  blocked: number[];
+  /** Forward vector for pawns ("dx,dy"), null for other pieces. */
+  forward: [number, number] | null;
+  /** Server epoch ms when this piece may next move. 0 = ready. */
+  readyAt: number;
+  /** Set to true after the piece moves for the first time. Used by pawn double-step. */
+  hasMoved: boolean;
 }
 
 // ---- Client -> Server -------------------------------------------------------
 
+/** How an army's pieces are arranged on first spawn. */
+export type SpawnMode = "classical" | "blob";
+
 export type ClientMessage =
-  | { t: "join"; name: string }
-  | { t: "move"; dx: number; dy: number } // step the avatar by one tile
-  | { t: "place"; kind: Extract<EntityKind, "building" | "artifact">; skin?: string }
-  /** Move on the shared chess board. `promotion` selects the piece when a pawn
-   * reaches the back rank (defaults to queen). */
-  | { t: "boardMove"; from: number; to: number; promotion?: string }
-  /** Claim an open seat (White, then Black) at the shared board. */
-  | { t: "sit" }
-  /** Reset the board to a fresh game (allowed once the game has ended). */
-  | { t: "newGame" }
-  /** Tell the server where the camera is looking, so it streams interest there
-   * too (spectator panning). Cleared by sending a focus on the avatar. */
+  | { t: "join"; name: string; spawnMode?: SpawnMode }
+  /** Move one of your pieces. Server validates ownership, legality, cooldown. */
+  | { t: "pieceMove"; pieceId: PieceId; toX: number; toY: number }
+  /** Rotate a pawn's forward direction. Long cooldown; only legal on pawns. */
+  | { t: "reorient"; pieceId: PieceId; dir: [number, number] }
+  /** Camera position — server streams interest around this point. */
   | { t: "focus"; x: number; y: number }
-  | { t: "chat"; text: string }
   | { t: "ping" };
 
 // ---- Server -> Client -------------------------------------------------------
 
+export interface PlayerStats {
+  elo: number;
+  wins: number;
+  losses: number;
+  kills: number;
+  deaths: number;
+}
+
 export interface SelfInfo {
-  id: EntityId;
-  x: number;
-  y: number;
+  armyId: ArmyId;
+  name: string;
+  color: string;
+  /** Spawn center, used by client to center camera initially. */
+  spawnX: number;
+  spawnY: number;
+  stats: PlayerStats;
 }
 
 export type ServerMessage =
-  | { t: "welcome"; you: SelfInfo; world: typeof WORLD; board: BoardSnapshot }
-  /** Full set of entities currently inside the player's interest region. */
-  | { t: "snapshot"; entities: Entity[] }
+  | { t: "welcome"; you: SelfInfo; world: typeof WORLD; serverNow: number }
+  /** Full set of pieces currently inside the player's interest region. */
+  | { t: "snapshot"; pieces: Piece[]; serverNow: number }
   /** Incremental interest update produced each server tick. */
   | {
       t: "delta";
-      enter: Entity[];
-      leave: EntityId[];
-      move: { id: EntityId; x: number; y: number }[];
+      enter: Piece[];
+      leave: PieceId[];
+      move: { id: PieceId; x: number; y: number; readyAt: number }[];
+      /** Pieces whose state changed but position did not — cooldown refresh
+       * and/or pawn forward direction change. `forward` is included only when
+       * it changed (null clears a previous direction). */
+      cooldown: { id: PieceId; readyAt: number; forward?: [number, number] | null }[];
+      serverNow: number;
     }
-  | { t: "board"; board: BoardSnapshot }
-  | { t: "chat"; from: string; text: string }
+  /** Your army was wiped (king captured / checkmate). You are dead until the
+   * `respawnAt` timestamp, then you'll receive a fresh snapshot. */
+  | {
+      t: "dead";
+      reason: string;
+      killerName: string;
+      killerElo: number;
+      eloDelta: number;
+      newStats: PlayerStats;
+      respawnAt: number;
+    }
+  /** Sent at the moment the dead overlay ends and your new army goes live. */
+  | { t: "respawned"; stats: PlayerStats }
+  /** Lightweight directory of every army's current state. Sent on join,
+   * whenever the set of armies changes, and whenever check status changes. */
+  | {
+      t: "roster";
+      armies: {
+        id: ArmyId; name: string; color: string;
+        spawnX: number; spawnY: number;
+        inCheck: boolean;
+        elo: number;
+        dead: boolean;
+      }[];
+    }
   | { t: "error"; message: string }
   | { t: "pong" };
 
-/** Zone index for a tile, and the helper to enumerate a Moore-neighborhood. */
-export function zoneOf(x: number, y: number): number {
+/** Zone key for a tile. String form lets the plane be unbounded (negative ok). */
+export function zoneOf(x: number, y: number): string {
   const zx = Math.floor(x / WORLD.zoneSize);
   const zy = Math.floor(y / WORLD.zoneSize);
-  const zonesWide = Math.ceil(WORLD.width / WORLD.zoneSize);
-  return zy * zonesWide + zx;
+  return `${zx},${zy}`;
 }
 
-/** The set of zone ids a player at (x,y) is interested in (self + 8 neighbors). */
-export function interestZones(x: number, y: number): Set<number> {
-  const zonesWide = Math.ceil(WORLD.width / WORLD.zoneSize);
-  const zonesTall = Math.ceil(WORLD.height / WORLD.zoneSize);
+/** Set of zone keys near (x,y) — the 3x3 Moore neighborhood. */
+export function interestZones(x: number, y: number): Set<string> {
   const zx = Math.floor(x / WORLD.zoneSize);
   const zy = Math.floor(y / WORLD.zoneSize);
-  const set = new Set<number>();
+  const set = new Set<string>();
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
-      const nx = zx + dx;
-      const ny = zy + dy;
-      if (nx < 0 || ny < 0 || nx >= zonesWide || ny >= zonesTall) continue;
-      set.add(ny * zonesWide + nx);
+      set.add(`${zx + dx},${zy + dy}`);
     }
   }
   return set;

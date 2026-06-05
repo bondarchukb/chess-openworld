@@ -1,72 +1,132 @@
 /**
- * Thin websocket wrapper. Holds the *local replica* of the interest set the
- * server sends us — the client renders this, it never authors world state.
+ * Thin websocket wrapper. Holds the local replica of the piece set the server
+ * streams (interest set around the camera). Client renders this, never authors.
  */
 
 import type {
-  BoardSnapshot,
+  ArmyId,
   ClientMessage,
-  Entity,
-  EntityId,
-  ServerMessage,
+  Piece,
+  PieceId,
+  PlayerStats,
   SelfInfo,
+  ServerMessage,
 } from "@chess-openworld/protocol";
+
+export interface RosterEntry {
+  id: ArmyId;
+  name: string;
+  color: string;
+  spawnX: number;
+  spawnY: number;
+  inCheck: boolean;
+  elo: number;
+  dead: boolean;
+}
+
+export interface DeadInfo {
+  reason: string;
+  killerName: string;
+  killerElo: number;
+  eloDelta: number;
+  newStats: PlayerStats;
+  respawnAt: number;
+}
 
 export class Connection {
   private socket: WebSocket;
   self: SelfInfo | null = null;
-  entities = new Map<EntityId, Entity>();
-  board: BoardSnapshot | null = null;
+  pieces = new Map<PieceId, Piece>();
+  roster: RosterEntry[] = [];
+  stats: PlayerStats | null = null;
+  dead: DeadInfo | null = null;
+  /** Best-known server clock offset (serverNow - clientNow), ms. */
+  serverOffset = 0;
   onStatus: (text: string) => void = () => {};
+  onWelcome: (self: SelfInfo) => void = () => {};
+  onDead: (info: DeadInfo) => void = () => {};
+  onRespawned: () => void = () => {};
 
-  constructor(url: string) {
+  constructor(url: string, private playerName: string, private spawnMode: "classical" | "blob" = "classical") {
     this.socket = new WebSocket(url);
     this.socket.addEventListener("open", () => {
       this.onStatus("connected — joining…");
-      this.send({ t: "join", name: `guest-${Math.floor(Math.random() * 1000)}` });
+      this.send({ t: "join", name: this.playerName, spawnMode: this.spawnMode });
     });
     this.socket.addEventListener("close", () => this.onStatus("disconnected"));
+    this.socket.addEventListener("error", () => this.onStatus("connection error"));
     this.socket.addEventListener("message", (ev) => {
       this.handle(JSON.parse(ev.data) as ServerMessage);
     });
+  }
+
+  serverNow(): number {
+    return Date.now() + this.serverOffset;
+  }
+
+  private syncClock(serverNow: number): void {
+    this.serverOffset = serverNow - Date.now();
   }
 
   private handle(msg: ServerMessage): void {
     switch (msg.t) {
       case "welcome":
         this.self = msg.you;
-        this.board = msg.board;
-        this.onStatus(`in world as ${msg.you.id} @ (${msg.you.x},${msg.you.y})`);
+        this.stats = msg.you.stats;
+        this.syncClock(msg.serverNow);
+        this.onStatus(`in world as ${msg.you.name}`);
+        this.onWelcome(msg.you);
         break;
       case "snapshot":
-        this.entities.clear();
-        for (const e of msg.entities) this.entities.set(e.id, e);
+        this.syncClock(msg.serverNow);
+        this.pieces.clear();
+        for (const p of msg.pieces) this.pieces.set(p.id, p);
         break;
       case "delta":
-        for (const e of msg.enter) this.entities.set(e.id, e);
+        this.syncClock(msg.serverNow);
+        for (const p of msg.enter) this.pieces.set(p.id, p);
         for (const m of msg.move) {
-          const e = this.entities.get(m.id);
-          if (e) {
-            e.x = m.x;
-            e.y = m.y;
+          const p = this.pieces.get(m.id);
+          if (p) {
+            p.x = m.x;
+            p.y = m.y;
+            p.readyAt = m.readyAt;
           }
         }
-        for (const id of msg.leave) this.entities.delete(id);
+        for (const c of msg.cooldown) {
+          const p = this.pieces.get(c.id);
+          if (p) {
+            p.readyAt = c.readyAt;
+            if (c.forward !== undefined) p.forward = c.forward;
+          }
+        }
+        for (const id of msg.leave) this.pieces.delete(id);
         break;
-      case "board":
-        this.board = msg.board;
+      case "dead":
+        this.dead = {
+          reason: msg.reason,
+          killerName: msg.killerName,
+          killerElo: msg.killerElo,
+          eloDelta: msg.eloDelta,
+          newStats: msg.newStats,
+          respawnAt: msg.respawnAt,
+        };
+        this.stats = msg.newStats;
+        this.onDead(this.dead);
+        break;
+      case "respawned":
+        this.stats = msg.stats;
+        if (this.dead) {
+          this.dead = null;
+          this.onRespawned();
+        }
+        break;
+      case "roster":
+        this.roster = msg.armies;
         break;
       case "error":
         this.onStatus(`server: ${msg.message}`);
         break;
-    }
-    // Keep our own avatar position in sync from the entity stream.
-    if (this.self) {
-      const me = this.entities.get(this.self.id);
-      if (me) {
-        this.self.x = me.x;
-        this.self.y = me.y;
-      }
     }
   }
 

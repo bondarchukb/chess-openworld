@@ -3,3 +3,4 @@ export * from "./pieces.js";
 export * from "./board.js";
 export * from "./effects.js";
 export * from "./moves.js";
+export * from "./plane.js";

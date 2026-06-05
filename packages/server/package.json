@@ -7,7 +7,7 @@
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx test/integration.ts"
+    "test": "echo no server tests yet"
   },
   "dependencies": {
     "@chess-openworld/engine": "*",

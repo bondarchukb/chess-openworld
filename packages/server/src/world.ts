@@ -1,268 +1,502 @@
 /**
- * The authoritative world model.
+ * Authoritative open-plane chess world.
  *
- * Two ideas make this scale-shaped even though it runs in one process today:
+ * - The plane is logically infinite; coordinates can be negative.
+ * - Each player owns an Army (16 pieces). Pieces are indexed by position
+ *   (`pieceAt`) for O(1) collision/occupancy lookups, and by zone for interest
+ *   streaming. Removing/moving updates both indices.
+ * - Movement is real-time: each piece has a `readyAt` timestamp; the server
+ *   rejects moves until the cooldown expires.
+ * - King capture wipes the owning army and respawns it elsewhere.
  *
- *  1. Spatial partitioning — every entity is indexed by the zone it sits in, so
- *     "what's near this player" is a cheap lookup over ~9 zones instead of a
- *     scan of the whole world. This is the seam where zones later move to
- *     separate server processes/machines.
- *
- *  2. Authoritative state — the world owns the engine GameState for the shared
- *     board. Clients ask to move; the world decides. Nothing is trusted.
+ * The chess rules (which squares a piece may reach) live in the engine —
+ * see `legalMovesPlane`. This file owns world state, not move math.
  */
 
-import { randomUUID } from "node:crypto";
 import {
   PieceRegistry,
-  applyMove,
-  initialState,
-  resolveLegalMove,
-  status as boardStatus,
-  type BoardEffects,
-  type GameState,
+  STANDARD_PIECES,
+  legalMovesPlane,
+  leavesOwnKingInCheck,
+  squareAttackedBy,
+  type Occupant,
+  type PlanePiece,
 } from "@chess-openworld/engine";
 import {
   WORLD,
   zoneOf,
-  type BoardSnapshot,
-  type Color,
-  type Entity,
-  type EntityId,
-  type EntityKind,
+  type ArmyId,
+  type Piece,
+  type PieceId,
+  type SpawnMode,
 } from "@chess-openworld/protocol";
 
-/** Globally-unique ids — safe across restarts and (later) multiple servers,
- * unlike a per-process counter, which collided with persisted ids on reload. */
-function makeId(prefix: string): EntityId {
-  return `${prefix}_${randomUUID().slice(0, 8)}`;
+export interface Army {
+  id: ArmyId;
+  name: string;
+  color: string;
+  /** Pawn advance direction. */
+  forward: [number, number];
+  /** Last spawn center (camera default; updated on respawn). */
+  spawnX: number;
+  spawnY: number;
+  pieces: Set<PieceId>;
+  /** True while the army's king is currently attacked by any enemy piece. */
+  inCheck: boolean;
+  /** True between death and respawn. Pieces are gone; army shell remains. */
+  dead: boolean;
+  /** Layout chosen at join time; used on every respawn for this player. */
+  spawnMode: SpawnMode;
 }
-
-const KNIGHT_HOPS: [number, number][] = [
-  [1, 2], [2, 1], [-1, 2], [-2, 1], [1, -2], [2, -1], [-1, -2], [-2, -1],
-];
-/** Artifacts within this Chebyshev radius (world tiles) of a board square
- * grant the piece there extra knight-like hops — a demonstrable rule modifier. */
-const AURA_RADIUS = 2;
 
 export interface PersistedWorld {
-  entities: Entity[];
-  /** Full engine state so castling rights / en passant / clocks survive. */
-  board: GameState;
+  nextPieceId: number;
+  nextArmyId: number;
 }
 
+const PALETTE = [
+  "#ff5577", "#55ddff", "#ffcc44", "#88ee66", "#cc77ff",
+  "#ff8833", "#33ccaa", "#ee66cc", "#aabb33", "#5577ff",
+];
+
 export class World {
-  private entities = new Map<EntityId, Entity>();
-  /** zone id -> set of entity ids currently in that zone. */
-  private zoneIndex = new Map<number, Set<EntityId>>();
-  /** tile index -> count of solid (blocking) entities, for collision. */
-  private solid = new Map<number, number>();
+  private registry = new PieceRegistry(STANDARD_PIECES);
+  private pieces = new Map<PieceId, Piece>();
+  private pieceAt = new Map<string, PieceId>();
+  private zoneIndex = new Map<string, Set<PieceId>>();
+  armies = new Map<ArmyId, Army>();
 
-  readonly registry = new PieceRegistry();
-  board: GameState = initialState();
-  /** Bumped on every accepted board move / reset so clients can sync lazily. */
-  boardVersion = 0;
-  /** Player ids seated at the board; only the seated player may move that color. */
-  seats: { white: EntityId | null; black: EntityId | null } = { white: null, black: null };
-  /** Where the shared board's a1 sits in world tiles. */
-  readonly boardOrigin = { x: Math.floor(WORLD.width / 2), y: Math.floor(WORLD.height / 2) };
+  private nextPieceId = 1;
+  private nextArmyId = 1;
 
-  // ---- entity lifecycle -----------------------------------------------------
+  // ---- queries --------------------------------------------------------------
 
-  addEntity(kind: EntityKind, x: number, y: number, label: string, extra: Partial<Entity> = {}): Entity {
-    const e: Entity = { id: makeId(kind[0]!), kind, x, y, label, ...extra };
-    this.entities.set(e.id, e);
-    this.indexAdd(e);
-    if (isSolid(e)) this.bumpSolid(tileIndex(e.x, e.y), 1);
-    return e;
+  getPiece(id: PieceId): Piece | undefined {
+    return this.pieces.get(id);
   }
 
-  removeEntity(id: EntityId): void {
-    const e = this.entities.get(id);
-    if (!e) return;
-    this.indexRemove(e);
-    if (isSolid(e)) this.bumpSolid(tileIndex(e.x, e.y), -1);
-    this.entities.delete(id);
-    // Free any seat this player held.
-    if (this.seats.white === id) this.seats.white = null;
-    if (this.seats.black === id) this.seats.black = null;
+  pieceAtXY(x: number, y: number): Piece | null {
+    const id = this.pieceAt.get(`${x},${y}`);
+    return id ? this.pieces.get(id) ?? null : null;
   }
 
-  getEntity(id: EntityId): Entity | undefined {
-    return this.entities.get(id);
-  }
-
-  /** Is the world tile blocked by a solid entity (building)? */
-  isSolidTile(x: number, y: number): boolean {
-    return (this.solid.get(tileIndex(x, y)) ?? 0) > 0;
-  }
-
-  /** Move an entity to (x,y), clamped to the world and re-indexed by zone.
-   * Players cannot walk into solid tiles. Returns true if it actually moved. */
-  moveEntity(id: EntityId, x: number, y: number): boolean {
-    const e = this.entities.get(id);
-    if (!e) return false;
-    const nx = clamp(x, 0, WORLD.width - 1);
-    const ny = clamp(y, 0, WORLD.height - 1);
-    if (nx === e.x && ny === e.y) return false;
-    if (e.kind === "player" && this.isSolidTile(nx, ny)) return false; // collision
-    const oldZone = zoneOf(e.x, e.y);
-    const newZone = zoneOf(nx, ny);
-    e.x = nx;
-    e.y = ny;
-    if (oldZone !== newZone) {
-      this.zoneIndex.get(oldZone)?.delete(id);
-      this.indexAddZone(newZone, id);
-    }
-    return true;
-  }
-
-  // ---- interest queries -----------------------------------------------------
-
-  /** All entities whose zone is in `zones`. */
-  entitiesInZones(zones: Set<number>): Entity[] {
-    const out: Entity[] = [];
+  piecesInZones(zones: Set<string>): Piece[] {
+    const out: Piece[] = [];
     for (const z of zones) {
       const ids = this.zoneIndex.get(z);
       if (!ids) continue;
       for (const id of ids) {
-        const e = this.entities.get(id);
-        if (e) out.push(e);
+        const p = this.pieces.get(id);
+        if (p) out.push(p);
       }
     }
     return out;
   }
 
-  // ---- the shared chess board ----------------------------------------------
+  getArmy(id: ArmyId): Army | undefined {
+    return this.armies.get(id);
+  }
 
-  /** Translate world entities sitting on / near the board into rule effects. */
-  boardEffects(): BoardEffects {
-    const blocked = new Set<number>();
-    const auraSquares = new Set<number>();
-    for (const e of this.entities.values()) {
-      if (e.kind !== "building" && e.kind !== "artifact") continue;
-      const bx = e.x - this.boardOrigin.x;
-      const by = e.y - this.boardOrigin.y;
-      if (e.kind === "building" && onBoard8(bx, by)) {
-        blocked.add(by * 8 + bx); // a building on a square walls it off
+  // ---- army lifecycle -------------------------------------------------------
+
+  spawnArmy(name: string, spawnMode: SpawnMode = "classical"): Army {
+    const armyId = `a${this.nextArmyId++}`;
+    const color = PALETTE[(this.nextArmyId - 2) % PALETTE.length] ?? "#ffffff";
+    const { cx, cy, forward } = this.findClearSpawn();
+    const army: Army = {
+      id: armyId,
+      name,
+      color,
+      forward,
+      spawnX: cx,
+      spawnY: cy,
+      pieces: new Set(),
+      inCheck: false,
+      dead: false,
+      spawnMode,
+    };
+    this.armies.set(armyId, army);
+    this.placeArmy(army);
+    return army;
+  }
+
+  removeArmy(armyId: ArmyId): void {
+    const army = this.armies.get(armyId);
+    if (!army) return;
+    for (const pid of [...army.pieces]) this.removePiece(pid);
+    this.armies.delete(armyId);
+  }
+
+  /** Remove all pieces of an army but keep the army shell so respawn can land
+   * later with the same id (preserves session linkage + roster entry). */
+  wipeArmy(armyId: ArmyId): void {
+    const army = this.armies.get(armyId);
+    if (!army) return;
+    for (const pid of [...army.pieces]) this.removePiece(pid);
+    army.inCheck = false;
+    army.dead = true;
+  }
+
+  respawnArmy(army: Army): void {
+    for (const pid of [...army.pieces]) this.removePiece(pid);
+    const { cx, cy, forward } = this.findClearSpawn();
+    army.spawnX = cx;
+    army.spawnY = cy;
+    army.forward = forward;
+    army.inCheck = false;
+    army.dead = false;
+    this.placeArmy(army);
+  }
+
+  // ---- moves ----------------------------------------------------------------
+
+  /**
+   * Attempt to move a piece. Enforces chess rules:
+   *   - legal piece movement (rides/hops/pawn)
+   *   - move must not leave the mover's own king in check
+   *   - cooldown
+   * Returns:
+   *   - `capturedKingOf` — non-null only if a king was directly taken (shouldn't
+   *     happen under normal check rules, but kept as a safety net)
+   *   - `matedArmies` — armies that were in check AND have no legal move after
+   *     this move resolves (game-over for them this round)
+   *   - `checkSet` — armies whose `inCheck` flag flipped as a result; caller
+   *     should re-broadcast the roster.
+   */
+  tryMove(
+    pieceId: PieceId,
+    toX: number,
+    toY: number,
+    nowMs: number
+  ):
+    | { ok: true; capturedKingOf: ArmyId | null; matedArmies: ArmyId[]; checkChanged: boolean }
+    | { ok: false; reason: string } {
+    const piece = this.pieces.get(pieceId);
+    if (!piece) return { ok: false, reason: "no such piece" };
+    if (nowMs < piece.readyAt) return { ok: false, reason: "on cooldown" };
+
+    const planePiece = this.planePieceOf(piece);
+    const occupant = this.occupantLookup();
+    const allPieces = () => this.allPiecesIter();
+    const findKing = (owner: string) => this.kingPosOf(owner);
+
+    // 1) Basic move legality (movement pattern + capture rules).
+    const moves = legalMovesPlane(planePiece, piece.x, piece.y, this.registry, occupant, WORLD.maxRideRange);
+    if (!moves.some((m) => m.x === toX && m.y === toY)) {
+      console.log(
+        `[tryMove reject] ${piece.type} ${piece.id} owner=${piece.owner} from=(${piece.x},${piece.y}) ` +
+          `to=(${toX},${toY}) hasMoved=${piece.hasMoved} forward=${JSON.stringify(piece.forward)} ` +
+          `legal=${JSON.stringify(moves)}`
+      );
+      return { ok: false, reason: "illegal move" };
+    }
+
+    // 2) Block moves that leave own king in check.
+    const planePieceXY = { ...planePiece, x: piece.x, y: piece.y };
+    if (leavesOwnKingInCheck(planePieceXY, toX, toY, this.registry, occupant, allPieces, findKing, WORLD.maxRideRange)) {
+      return { ok: false, reason: "would leave king in check" };
+    }
+
+    // 3) Apply move.
+    const target = this.pieceAtXY(toX, toY);
+    let capturedKingOf: ArmyId | null = null;
+    if (target) {
+      if (target.owner === piece.owner) return { ok: false, reason: "blocked by own piece" };
+      if (target.type === "king") capturedKingOf = target.owner;
+      this.removePiece(target.id);
+    }
+    this.movePieceTo(piece, toX, toY);
+    piece.hasMoved = true;
+    piece.readyAt = nowMs + WORLD.pieceCooldownMs;
+
+    // 4) Recompute check + mate for every other army. (Cheap: one square-attack
+    //    check per army for `inCheck`; mate check only when in check.)
+    const matedArmies: ArmyId[] = [];
+    let checkChanged = false;
+    for (const army of this.armies.values()) {
+      const wasInCheck = army.inCheck;
+      const nowInCheck = this.isArmyInCheck(army.id);
+      if (wasInCheck !== nowInCheck) checkChanged = true;
+      army.inCheck = nowInCheck;
+      if (nowInCheck && !this.armyHasAnyLegalMove(army.id)) {
+        matedArmies.push(army.id);
       }
-      if (e.kind === "artifact") {
-        // Any board square within AURA_RADIUS of the artifact gets the aura.
-        for (let sq = 0; sq < 64; sq++) {
-          const sx = sq % 8;
-          const sy = Math.floor(sq / 8);
-          if (Math.abs(this.boardOrigin.x + sx - e.x) <= AURA_RADIUS &&
-              Math.abs(this.boardOrigin.y + sy - e.y) <= AURA_RADIUS) {
-            auraSquares.add(sq);
-          }
+    }
+
+    return { ok: true, capturedKingOf, matedArmies, checkChanged };
+  }
+
+  /** Public: does `armyId`'s king currently sit on an attacked square? */
+  isArmyInCheck(armyId: ArmyId): boolean {
+    const king = this.kingPosOf(armyId);
+    if (!king) return false;
+    const occupant = this.occupantLookup();
+    return squareAttackedBy(king.x, king.y, armyId, this.allPiecesIter(), this.registry, occupant, WORLD.maxRideRange);
+  }
+
+  /** True if any piece of `armyId` has at least one legal (check-respecting) move. */
+  armyHasAnyLegalMove(armyId: ArmyId): boolean {
+    const occupant = this.occupantLookup();
+    const allPieces = () => this.allPiecesIter();
+    const findKing = (owner: string) => this.kingPosOf(owner);
+    const army = this.armies.get(armyId);
+    if (!army) return false;
+    for (const pid of army.pieces) {
+      const piece = this.pieces.get(pid);
+      if (!piece) continue;
+      const plane = { ...this.planePieceOf(piece), x: piece.x, y: piece.y };
+      const moves = legalMovesPlane(plane, piece.x, piece.y, this.registry, occupant, WORLD.maxRideRange);
+      for (const m of moves) {
+        if (!leavesOwnKingInCheck(plane, m.x, m.y, this.registry, occupant, allPieces, findKing, WORLD.maxRideRange)) {
+          return true;
         }
       }
     }
+    return false;
+  }
+
+  private planePieceOf(p: Piece): PlanePiece {
     return {
-      blocked,
-      grantHops: (sq) => (auraSquares.has(sq) ? KNIGHT_HOPS : []),
+      owner: p.owner,
+      type: p.type,
+      forward: p.forward ?? undefined,
+      hasMoved: p.hasMoved,
     };
   }
 
-  boardSnapshot(): BoardSnapshot {
-    const effects = this.boardEffects();
-    return {
-      originX: this.boardOrigin.x,
-      originY: this.boardOrigin.y,
-      cells: this.board.board.map((p) => (p ? `${p.color}:${p.type}` : null)),
-      sideToMove: this.board.sideToMove,
-      status: boardStatus(this.board, this.registry, effects),
-      seatWhite: this.seats.white,
-      seatBlack: this.seats.black,
-      blocked: [...(effects.blocked ?? [])],
+  private occupantLookup(): (x: number, y: number) => Occupant {
+    return (x: number, y: number) => {
+      const p = this.pieceAtXY(x, y);
+      if (!p) return null;
+      return { ...this.planePieceOf(p), x: p.x, y: p.y };
     };
   }
 
-  /** Seat a player at the first open color. Returns the color or null (full). */
-  claimSeat(playerId: EntityId): Color | null {
-    if (this.seats.white === playerId) return "white";
-    if (this.seats.black === playerId) return "black";
-    if (!this.seats.white) return (this.seats.white = playerId), "white";
-    if (!this.seats.black) return (this.seats.black = playerId), "black";
+  private *allPiecesIter(): IterableIterator<PlanePiece & { x: number; y: number }> {
+    for (const p of this.pieces.values()) {
+      yield { ...this.planePieceOf(p), x: p.x, y: p.y };
+    }
+  }
+
+  private kingPosOf(armyId: ArmyId): { x: number; y: number } | null {
+    const army = this.armies.get(armyId);
+    if (!army) return null;
+    for (const pid of army.pieces) {
+      const p = this.pieces.get(pid);
+      if (p && p.type === "king") return { x: p.x, y: p.y };
+    }
     return null;
   }
 
-  /** Attempt an engine-validated move, enforcing seat + turn ownership. */
-  tryBoardMove(playerId: EntityId, from: number, to: number, promotion?: string): { ok: boolean; reason?: string } {
-    const effects = this.boardEffects();
-    if (boardStatus(this.board, this.registry, effects) !== "playing" &&
-        boardStatus(this.board, this.registry, effects) !== "check") {
-      return { ok: false, reason: "game over — start a new game" };
+  /**
+   * Rotate a pawn's forward vector. Costs the long reorient cooldown (shared
+   * with normal move readyAt — reorient is itself a "real action").
+   * `dir` must be one of the four cardinal unit vectors.
+   */
+  tryReorient(
+    pieceId: PieceId,
+    dir: [number, number],
+    nowMs: number
+  ): { ok: true } | { ok: false; reason: string } {
+    const piece = this.pieces.get(pieceId);
+    if (!piece) return { ok: false, reason: "no such piece" };
+    if (piece.type !== "pawn") return { ok: false, reason: "only pawns reorient" };
+    if (nowMs < piece.readyAt) return { ok: false, reason: "on cooldown" };
+    const [dx, dy] = dir;
+    const isCardinalUnit = (dx === 0) !== (dy === 0) && Math.abs(dx) <= 1 && Math.abs(dy) <= 1;
+    if (!isCardinalUnit) return { ok: false, reason: "bad direction" };
+    if (piece.forward && piece.forward[0] === dx && piece.forward[1] === dy) {
+      return { ok: false, reason: "already facing that way" };
     }
-    const seat = this.board.sideToMove;
-    if (this.seats[seat] !== playerId) {
-      return { ok: false, reason: `not your turn (${seat} to move)` };
-    }
-    const move = resolveLegalMove(this.board, from, to, this.registry, effects, promotion);
-    if (!move) return { ok: false, reason: "illegal move" };
-    this.board = applyMove(this.board, move, this.registry);
-    this.boardVersion++;
+    piece.forward = [dx, dy];
+    piece.readyAt = nowMs + WORLD.reorientCooldownMs;
     return { ok: true };
-  }
-
-  /** Reset to a fresh game. Only meaningful once a game has ended. */
-  resetBoard(): void {
-    this.board = initialState();
-    this.boardVersion++;
   }
 
   // ---- persistence ----------------------------------------------------------
 
   serialize(): PersistedWorld {
     return {
-      entities: [...this.entities.values()].filter((e) => e.kind !== "player"),
-      board: this.board, // full GameState (JSON-serializable)
+      nextPieceId: this.nextPieceId,
+      nextArmyId: this.nextArmyId,
     };
   }
 
   load(data: PersistedWorld): void {
-    for (const e of data.entities) {
-      this.entities.set(e.id, e);
-      this.indexAdd(e);
-      if (isSolid(e)) this.bumpSolid(tileIndex(e.x, e.y), 1);
+    this.pieces.clear();
+    this.pieceAt.clear();
+    this.zoneIndex.clear();
+    this.armies.clear();
+    this.nextPieceId = data.nextPieceId ?? 1;
+    this.nextArmyId = data.nextArmyId ?? 1;
+  }
+
+  // ---- internals ------------------------------------------------------------
+
+  private placeArmy(army: Army): void {
+    if (army.spawnMode === "blob") this.placeBlobSetup(army);
+    else this.placeClassicalSetup(army);
+  }
+
+  private placeClassicalSetup(army: Army): void {
+    const { spawnX: cx, spawnY: cy, forward } = army;
+    const backRow: string[] = ["rook", "knight", "bishop", "queen", "king", "bishop", "knight", "rook"];
+    const fileAxis: [number, number] = [-forward[1], forward[0]];
+    const backOffset: [number, number] = [-forward[0], -forward[1]];
+    const frontOffset: [number, number] = [0, 0];
+
+    for (let i = 0; i < 8; i++) {
+      const shift = i - 3;
+      const bx = Math.round(cx + fileAxis[0] * shift + backOffset[0]);
+      const by = Math.round(cy + fileAxis[1] * shift + backOffset[1]);
+      const fx = Math.round(cx + fileAxis[0] * shift + frontOffset[0]);
+      const fy = Math.round(cy + fileAxis[1] * shift + frontOffset[1]);
+      this.spawnPiece(army, backRow[i]!, bx, by);
+      this.spawnPiece(army, "pawn", fx, fy);
     }
-    if (data.board?.board) this.board = data.board;
-    // Seats reference live connections, which are gone after a restart.
-    this.seats = { white: null, black: null };
   }
 
-  // ---- zone index internals -------------------------------------------------
-
-  private indexAdd(e: Entity): void {
-    this.indexAddZone(zoneOf(e.x, e.y), e.id);
+  /** Blob: 16 pieces randomly scattered in a 5x5 area around spawn center.
+   * Same piece count as classical (1 king, 1 queen, 2 rooks, 2 bishops, 2 knights, 8 pawns). */
+  private placeBlobSetup(army: Army): void {
+    const types: string[] = [
+      "king", "queen", "rook", "rook", "bishop", "bishop", "knight", "knight",
+      "pawn", "pawn", "pawn", "pawn", "pawn", "pawn", "pawn", "pawn",
+    ];
+    const occupied = new Set<string>();
+    const tryPlace = (type: string): boolean => {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const dx = Math.floor(Math.random() * 5) - 2;
+        const dy = Math.floor(Math.random() * 5) - 2;
+        const x = army.spawnX + dx;
+        const y = army.spawnY + dy;
+        const key = `${x},${y}`;
+        if (occupied.has(key)) continue;
+        if (this.pieceAtXY(x, y)) continue;
+        occupied.add(key);
+        this.spawnPiece(army, type, x, y);
+        return true;
+      }
+      return false;
+    };
+    for (const t of types) {
+      if (!tryPlace(t)) {
+        // Fallback: walk outward until a free cell.
+        outer: for (let r = 3; r < 30; r++) {
+          for (let dy = -r; dy <= r; dy++) {
+            for (let dx = -r; dx <= r; dx++) {
+              if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+              const x = army.spawnX + dx;
+              const y = army.spawnY + dy;
+              const key = `${x},${y}`;
+              if (occupied.has(key) || this.pieceAtXY(x, y)) continue;
+              occupied.add(key);
+              this.spawnPiece(army, t, x, y);
+              break outer;
+            }
+          }
+        }
+      }
+    }
   }
-  private indexAddZone(zone: number, id: EntityId): void {
+
+  private spawnPiece(army: Army, type: string, x: number, y: number): Piece {
+    const id = `p${this.nextPieceId++}`;
+    const piece: Piece = {
+      id,
+      owner: army.id,
+      color: army.color,
+      type,
+      x,
+      y,
+      forward: type === "pawn" ? army.forward : null,
+      readyAt: 0,
+      hasMoved: false,
+    };
+    this.pieces.set(id, piece);
+    this.pieceAt.set(`${x},${y}`, id);
+    this.indexZoneAdd(zoneOf(x, y), id);
+    army.pieces.add(id);
+    return piece;
+  }
+
+  private removePiece(id: PieceId): void {
+    const p = this.pieces.get(id);
+    if (!p) return;
+    this.pieces.delete(id);
+    this.pieceAt.delete(`${p.x},${p.y}`);
+    this.indexZoneRemove(zoneOf(p.x, p.y), id);
+    const army = this.armies.get(p.owner);
+    if (army) army.pieces.delete(id);
+  }
+
+  private movePieceTo(p: Piece, toX: number, toY: number): void {
+    this.pieceAt.delete(`${p.x},${p.y}`);
+    const oldZone = zoneOf(p.x, p.y);
+    p.x = toX;
+    p.y = toY;
+    this.pieceAt.set(`${toX},${toY}`, p.id);
+    const newZone = zoneOf(toX, toY);
+    if (oldZone !== newZone) {
+      this.indexZoneRemove(oldZone, p.id);
+      this.indexZoneAdd(newZone, p.id);
+    }
+  }
+
+  private indexZoneAdd(zone: string, id: PieceId): void {
     let set = this.zoneIndex.get(zone);
-    if (!set) this.zoneIndex.set(zone, (set = new Set()));
+    if (!set) {
+      set = new Set();
+      this.zoneIndex.set(zone, set);
+    }
     set.add(id);
   }
-  private indexRemove(e: Entity): void {
-    this.zoneIndex.get(zoneOf(e.x, e.y))?.delete(e.id);
+
+  private indexZoneRemove(zone: string, id: PieceId): void {
+    const set = this.zoneIndex.get(zone);
+    if (!set) return;
+    set.delete(id);
+    if (set.size === 0) this.zoneIndex.delete(zone);
   }
-  private bumpSolid(tile: number, delta: number): void {
-    const next = (this.solid.get(tile) ?? 0) + delta;
-    if (next <= 0) this.solid.delete(tile);
-    else this.solid.set(tile, next);
+
+  /**
+   * Pick a spawn near an existing army so new arrivals see action immediately.
+   * - First army: spawns at origin (0, 0) facing north.
+   * - Later armies: pick a random existing army, face it, place ~20 tiles away
+   *   in the direction toward it. If that area is occupied, walk outward.
+   */
+  private findClearSpawn(): { cx: number; cy: number; forward: [number, number] } {
+    const dirs: [number, number][] = [[0, -1], [0, 1], [1, 0], [-1, 0]];
+
+    if (this.armies.size === 0) {
+      return { cx: 0, cy: 0, forward: [0, -1] };
+    }
+
+    const others = [...this.armies.values()];
+    const target = others[Math.floor(Math.random() * others.length)]!;
+    // Pick a side of the target army to spawn on (random cardinal).
+    const sideIdx = Math.floor(Math.random() * 4);
+    const side = dirs[sideIdx]!;
+    // Face the target.
+    const fwd: [number, number] = [-side[0], -side[1]];
+    const fileAxis: [number, number] = [-fwd[1], fwd[0]];
+    const isClear = (cx: number, cy: number) => {
+      for (let i = -4; i <= 4; i++) {
+        for (let r = -2; r <= 2; r++) {
+          const x = Math.round(cx + fileAxis[0] * i + fwd[0] * r);
+          const y = Math.round(cy + fileAxis[1] * i + fwd[1] * r);
+          if (this.pieceAtXY(x, y)) return false;
+        }
+      }
+      return true;
+    };
+    // Start ~20 tiles out (just outside the target army's ranks, inside its
+    // 3x3 zone interest set so both players see each other on join), step out.
+    for (let d = 20; d < 200; d += 8) {
+      const cx = target.spawnX + side[0] * d;
+      const cy = target.spawnY + side[1] * d;
+      if (isClear(cx, cy)) return { cx, cy, forward: fwd };
+    }
+    return { cx: target.spawnX + side[0] * 200, cy: target.spawnY + side[1] * 200, forward: fwd };
   }
-}
-
-function isSolid(e: Entity): boolean {
-  return e.kind === "building";
-}
-
-function tileIndex(x: number, y: number): number {
-  return y * WORLD.width + x;
-}
-
-function onBoard8(x: number, y: number): boolean {
-  return x >= 0 && x < 8 && y >= 0 && y < 8;
-}
-
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v;
 }

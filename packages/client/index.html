@@ -5,25 +5,76 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Chess Open World</title>
     <style>
-      html, body { margin: 0; height: 100%; background: #1b1030; overflow: hidden;
+      html, body { margin: 0; height: 100%; background: #15102a; overflow: hidden;
         font-family: system-ui, sans-serif; color: #eee; }
       #hud { position: fixed; top: 10px; left: 12px; z-index: 10; font-size: 13px;
         line-height: 1.5; text-shadow: 0 1px 2px #000; pointer-events: none; }
       #hud b { color: #ffd86b; }
       #board { color: #9fe3ff; margin-top: 4px; }
       kbd { background: #3a2b5c; border-radius: 4px; padding: 1px 5px; }
+      #entry { position: fixed; inset: 0; z-index: 100; display: flex;
+        align-items: center; justify-content: center; background: #15102a; }
+      #entry-card { background: #1f1738; padding: 32px 36px; border-radius: 12px;
+        box-shadow: 0 12px 40px rgba(0,0,0,.5); max-width: 380px; text-align: center; }
+      #entry h1 { margin: 0 0 6px; color: #ffd86b; font-size: 22px; }
+      #entry p { margin: 0 0 18px; color: #bda7e2; font-size: 13px; line-height: 1.5; }
+      #entry input { width: 100%; box-sizing: border-box; padding: 10px 12px;
+        font-size: 15px; background: #2a2049; color: #fff; border: 1px solid #3a2b5c;
+        border-radius: 6px; margin-bottom: 12px; }
+      #entry input:focus { outline: none; border-color: #ffd86b; }
+      #entry button { width: 100%; padding: 11px; font-size: 15px; font-weight: 600;
+        background: #ffd86b; color: #1f1738; border: none; border-radius: 6px;
+        cursor: pointer; }
+      #entry button:hover { background: #ffe388; }
+      #entry .hint { font-size: 11px; color: #8a7aae; margin-top: 14px; }
+      #change-name { position: fixed; bottom: 12px; right: 12px; z-index: 10;
+        background: rgba(31,23,56,.85); color: #bda7e2; border: 1px solid #3a2b5c;
+        padding: 6px 10px; border-radius: 5px; font-size: 12px; cursor: pointer;
+        display: none; }
+      #change-name:hover { color: #ffd86b; }
     </style>
   </head>
   <body>
+    <div id="entry">
+      <div id="entry-card">
+        <h1>Chess Open World</h1>
+        <p>Pick a name. Spawn an army on the infinite plane. Capture enemy kings.</p>
+        <input id="entry-name" type="text" placeholder="your name" maxlength="20" />
+        <div style="text-align:left; margin: 6px 0 14px; font-size:13px; color:#bda7e2;">
+          <div style="margin-bottom:4px;">spawn formation:</div>
+          <label style="display:block; margin:3px 0;">
+            <input type="radio" name="spawn-mode" value="classical" checked /> Classical — 8 back rank + 8 pawns
+          </label>
+          <label style="display:block; margin:3px 0;">
+            <input type="radio" name="spawn-mode" value="blob" /> Blob — same 16 pieces, random scatter in 5x5
+          </label>
+        </div>
+        <button id="entry-join">Join the world</button>
+        <div class="hint">pan WASD/arrows · click your piece → click target · pawn keys 1234 reorient</div>
+      </div>
+    </div>
     <div id="hud">
-      <div><b>Chess Open World</b> — move <kbd>WASD</kbd>/<kbd>arrows</kbd> ·
-        place <kbd>B</kbd>uilding / <kbd>F</kbd> artifact</div>
-      <div><b>drag</b> to roam · <b>scroll</b> to zoom · <kbd>C</kbd> recenter ·
-        <kbd>Enter</kbd> take a seat · <b>click</b> a piece then a square to move ·
-        <kbd>N</kbd> new game</div>
+      <div><b>Chess Open World</b> — pan <kbd>WASD</kbd>/<kbd>arrows</kbd>/drag ·
+        zoom <kbd>scroll</kbd> · recenter <kbd>C</kbd></div>
+      <div><b>click</b> your piece → click a highlighted square to move ·
+        <kbd>Esc</kbd> deselect · <kbd>G</kbd> jump to nearest enemy ·
+        capture enemy king to wipe their army</div>
+      <div>own pawn selected? <kbd>1</kbd>↑ <kbd>2</kbd>→ <kbd>3</kbd>↓ <kbd>4</kbd>← reorient
+        (long cooldown)</div>
       <div id="status">connecting…</div>
       <div id="board"></div>
     </div>
+    <div id="dead-overlay" style="display:none; position:fixed; inset:0; z-index:50;
+        background:rgba(15,8,28,.85); display:none; align-items:center; justify-content:center;">
+      <div style="background:#1f1738; padding:28px 36px; border-radius:12px; box-shadow:0 12px 40px #000;
+          max-width:380px; text-align:center; border:2px solid #ff3333;">
+        <div style="font-size:32px; font-weight:900; color:#ff3333; margin-bottom:8px;">YOU DIED</div>
+        <div id="dead-reason" style="color:#bda7e2; margin-bottom:14px;">—</div>
+        <div id="dead-elo" style="font-size:18px; margin-bottom:10px;">—</div>
+        <div id="dead-countdown" style="font-size:14px; color:#ffd86b;">respawning…</div>
+      </div>
+    </div>
+    <button id="change-name">change name</button>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

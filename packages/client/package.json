@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@chess-openworld/engine": "*",
     "@chess-openworld/protocol": "*",
     "pixi.js": "^8.5.0"
   },
