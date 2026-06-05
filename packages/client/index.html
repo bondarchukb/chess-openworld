@@ -7,31 +7,66 @@
     <style>
       html, body { margin: 0; height: 100%; background: #15102a; overflow: hidden;
         font-family: system-ui, sans-serif; color: #eee; }
-      #hud { position: fixed; top: 10px; left: 12px; z-index: 10; font-size: 13px;
-        line-height: 1.5; text-shadow: 0 1px 2px #000; pointer-events: none; }
-      #hud b { color: #ffd86b; }
-      #board { color: #9fe3ff; margin-top: 4px; }
-      kbd { background: #3a2b5c; border-radius: 4px; padding: 1px 5px; }
+      kbd { background: #3a2b5c; border-radius: 4px; padding: 1px 6px; font-family: inherit; font-size: 0.9em; }
+
+      /* Top-left identity block */
+      #hud-identity { position: fixed; top: 12px; left: 14px; z-index: 10;
+        font-size: 13px; line-height: 1.5; text-shadow: 0 1px 2px #000; pointer-events: none; }
+      #hud-name { font-size: 15px; font-weight: 700; color: #ffd86b; }
+      #hud-stats { color: #bda7e2; }
+
+      /* Top-right cluster */
+      #hud-topright { position: fixed; top: 12px; right: 14px; z-index: 10;
+        display: flex; align-items: center; gap: 10px; font-size: 12px; pointer-events: none; }
+      #conn-dot { width: 10px; height: 10px; border-radius: 50%; background: #888;
+        box-shadow: 0 0 6px rgba(0,0,0,0.6); transition: background .2s; }
+      #help-btn { background: rgba(31,23,56,.85); color: #bda7e2; border: 1px solid #3a2b5c;
+        width: 24px; height: 24px; border-radius: 50%; font-size: 13px; font-weight: 700;
+        cursor: pointer; pointer-events: auto; display: flex; align-items: center; justify-content: center; }
+      #help-btn:hover { color: #ffd86b; border-color: #ffd86b; }
+
+      /* Bottom-center contextual hint */
+      #hud-hint { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 10;
+        font-size: 13px; color: #bda7e2; text-shadow: 0 1px 2px #000; pointer-events: none;
+        opacity: 0.85; transition: opacity .3s; }
+
+      /* Entry screen */
       #entry { position: fixed; inset: 0; z-index: 100; display: flex;
         align-items: center; justify-content: center; background: #15102a; }
       #entry-card { background: #1f1738; padding: 32px 36px; border-radius: 12px;
         box-shadow: 0 12px 40px rgba(0,0,0,.5); max-width: 380px; text-align: center; }
       #entry h1 { margin: 0 0 6px; color: #ffd86b; font-size: 22px; }
       #entry p { margin: 0 0 18px; color: #bda7e2; font-size: 13px; line-height: 1.5; }
-      #entry input { width: 100%; box-sizing: border-box; padding: 10px 12px;
+      #entry input[type="text"] { width: 100%; box-sizing: border-box; padding: 10px 12px;
         font-size: 15px; background: #2a2049; color: #fff; border: 1px solid #3a2b5c;
         border-radius: 6px; margin-bottom: 12px; }
-      #entry input:focus { outline: none; border-color: #ffd86b; }
+      #entry input[type="text"]:focus { outline: none; border-color: #ffd86b; }
+      #entry input[type="radio"] { margin-right: 6px; vertical-align: middle; }
       #entry button { width: 100%; padding: 11px; font-size: 15px; font-weight: 600;
-        background: #ffd86b; color: #1f1738; border: none; border-radius: 6px;
-        cursor: pointer; }
+        background: #ffd86b; color: #1f1738; border: none; border-radius: 6px; cursor: pointer; }
       #entry button:hover { background: #ffe388; }
-      #entry .hint { font-size: 11px; color: #8a7aae; margin-top: 14px; }
-      #change-name { position: fixed; bottom: 12px; right: 12px; z-index: 10;
-        background: rgba(31,23,56,.85); color: #bda7e2; border: 1px solid #3a2b5c;
-        padding: 6px 10px; border-radius: 5px; font-size: 12px; cursor: pointer;
-        display: none; }
-      #change-name:hover { color: #ffd86b; }
+
+      /* Help modal */
+      #help-overlay { position: fixed; inset: 0; z-index: 80; display: none;
+        align-items: center; justify-content: center; background: rgba(15,8,28,.85); }
+      #help-card { background: #1f1738; padding: 28px 32px; border-radius: 12px;
+        box-shadow: 0 12px 40px #000; max-width: 460px; color: #eee; }
+      #help-card h2 { color: #ffd86b; margin: 0 0 12px; font-size: 20px; }
+      #help-card .row { margin: 6px 0; display: flex; gap: 12px; align-items: baseline; }
+      #help-card .row .k { min-width: 110px; color: #ffd86b; }
+      #help-card .close { margin-top: 16px; background: transparent; color: #bda7e2;
+        border: 1px solid #3a2b5c; padding: 6px 14px; border-radius: 5px; cursor: pointer; }
+      #help-card .close:hover { color: #ffd86b; border-color: #ffd86b; }
+
+      /* Dead overlay */
+      #dead-overlay { position: fixed; inset: 0; z-index: 60; display: none;
+        align-items: center; justify-content: center; background: rgba(15,8,28,.85); }
+      #dead-card { background:#1f1738; padding:28px 36px; border-radius:12px; box-shadow:0 12px 40px #000;
+        max-width:380px; text-align:center; border:2px solid #ff3333; }
+      #dead-card .title { font-size:32px; font-weight:900; color:#ff3333; margin-bottom:8px; }
+      #dead-reason { color:#bda7e2; margin-bottom:14px; }
+      #dead-elo { font-size:18px; margin-bottom:10px; }
+      #dead-countdown { font-size:14px; color:#ffd86b; }
     </style>
   </head>
   <body>
@@ -41,40 +76,74 @@
         <p>Pick a name. Spawn an army on the infinite plane. Capture enemy kings.</p>
         <input id="entry-name" type="text" placeholder="your name" maxlength="20" />
         <div style="text-align:left; margin: 6px 0 14px; font-size:13px; color:#bda7e2;">
-          <div style="margin-bottom:4px;">spawn formation:</div>
+          <div style="margin-bottom:4px;">join as:</div>
           <label style="display:block; margin:3px 0;">
             <input type="radio" name="spawn-mode" value="classical" checked /> Classical — 8 back rank + 8 pawns
           </label>
           <label style="display:block; margin:3px 0;">
-            <input type="radio" name="spawn-mode" value="blob" /> Blob — same 16 pieces, random scatter in 5x5
+            <input type="radio" name="spawn-mode" value="blob" /> Blob — same 16 pieces, random scatter
+          </label>
+          <label style="display:block; margin:3px 0;">
+            <input type="radio" name="spawn-mode" value="spectator" /> Spectator — watch only, no army
           </label>
         </div>
         <button id="entry-join">Join the world</button>
-        <div class="hint">pan WASD/arrows · click your piece → click target · pawn keys 1234 reorient</div>
       </div>
     </div>
-    <div id="hud">
-      <div><b>Chess Open World</b> — pan <kbd>WASD</kbd>/<kbd>arrows</kbd>/drag ·
-        zoom <kbd>scroll</kbd> · recenter <kbd>C</kbd></div>
-      <div><b>click</b> your piece → click a highlighted square to move ·
-        <kbd>Esc</kbd> deselect · <kbd>G</kbd> jump to nearest enemy ·
-        capture enemy king to wipe their army</div>
-      <div>own pawn selected? <kbd>1</kbd>↑ <kbd>2</kbd>→ <kbd>3</kbd>↓ <kbd>4</kbd>← reorient
-        (long cooldown)</div>
-      <div id="status">connecting…</div>
-      <div id="board"></div>
+
+    <div id="hud-identity">
+      <div id="hud-name">—</div>
+      <div id="hud-stats">—</div>
     </div>
-    <div id="dead-overlay" style="display:none; position:fixed; inset:0; z-index:50;
-        background:rgba(15,8,28,.85); display:none; align-items:center; justify-content:center;">
-      <div style="background:#1f1738; padding:28px 36px; border-radius:12px; box-shadow:0 12px 40px #000;
-          max-width:380px; text-align:center; border:2px solid #ff3333;">
-        <div style="font-size:32px; font-weight:900; color:#ff3333; margin-bottom:8px;">YOU DIED</div>
-        <div id="dead-reason" style="color:#bda7e2; margin-bottom:14px;">—</div>
-        <div id="dead-elo" style="font-size:18px; margin-bottom:10px;">—</div>
-        <div id="dead-countdown" style="font-size:14px; color:#ffd86b;">respawning…</div>
+    <div id="hud-topright">
+      <div id="conn-dot" title="connection"></div>
+      <button id="help-btn" title="help (?)">?</button>
+    </div>
+    <div id="hud-hint">click a piece to act</div>
+
+    <div id="skillbar"></div>
+    <style>
+      #skillbar { position: fixed; bottom: 48px; left: 50%; transform: translateX(-50%);
+        z-index: 11; display: none; gap: 10px; pointer-events: none; }
+      .skill {
+        width: 56px; height: 56px; border-radius: 10px;
+        background: rgba(31,23,56,.92); border: 2px solid #3a2b5c;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        font-size: 24px; color: #ffd86b; position: relative;
+        box-shadow: 0 4px 14px rgba(0,0,0,.5); pointer-events: auto;
+      }
+      .skill .key { position: absolute; bottom: 2px; right: 4px; font-size: 10px; color: #bda7e2; font-weight: 700; }
+      .skill .name { position: absolute; top: -16px; font-size: 10px; color: #bda7e2;
+        background: rgba(0,0,0,.55); padding: 1px 4px; border-radius: 3px; white-space: nowrap; }
+      .skill.disabled { opacity: 0.4; }
+      .skill.locked { color: #6b5a8a; }
+    </style>
+
+    <div id="help-overlay">
+      <div id="help-card">
+        <h2>Chess Open World</h2>
+        <div class="row"><span class="k">Pan camera</span><span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> / arrows / drag</span></div>
+        <div class="row"><span class="k">Zoom</span><span>mouse wheel</span></div>
+        <div class="row"><span class="k">Recenter</span><span><kbd>C</kbd></span></div>
+        <div class="row"><span class="k">Find enemy</span><span><kbd>G</kbd> jump to nearest</span></div>
+        <div class="row"><span class="k">Move piece</span><span>click your piece → click highlighted square</span></div>
+        <div class="row"><span class="k">Deselect</span><span><kbd>Esc</kbd></span></div>
+        <div class="row"><span class="k">Pawn reorient</span><span><kbd>1</kbd>↑ <kbd>2</kbd>→ <kbd>3</kbd>↓ <kbd>4</kbd>← (long CD)</span></div>
+        <div class="row"><span class="k">Win</span><span>capture an enemy king (or checkmate)</span></div>
+        <div class="row"><span class="k">Help</span><span><kbd>?</kbd> toggle this panel</span></div>
+        <button class="close" id="help-close">close</button>
       </div>
     </div>
-    <button id="change-name">change name</button>
+
+    <div id="dead-overlay">
+      <div id="dead-card">
+        <div class="title">YOU DIED</div>
+        <div id="dead-reason">—</div>
+        <div id="dead-elo">—</div>
+        <div id="dead-countdown">respawning…</div>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

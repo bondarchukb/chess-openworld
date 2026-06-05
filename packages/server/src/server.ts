@@ -26,7 +26,8 @@ import { World } from "./world.js";
 import { StatsStore, saveStats } from "./stats.js";
 
 interface Session {
-  armyId: ArmyId;
+  /** null for spectators. */
+  armyId: ArmyId | null;
   socket: WebSocket;
   name: string;
   /** Last known pieces in interest set (id -> last sent {x,y,readyAt,forward}). */
@@ -96,7 +97,9 @@ export class GameServer {
 
       if (msg.t === "join") {
         if (session) return;
-        session = this.handleJoin(socket, msg.name, msg.spawnMode ?? "classical");
+        session = msg.asSpectator
+          ? this.handleSpectatorJoin(socket, msg.name)
+          : this.handleJoin(socket, msg.name, msg.spawnMode ?? "classical");
         return;
       }
       if (!session) return send(socket, { t: "error", message: "join first" });
@@ -105,12 +108,14 @@ export class GameServer {
 
     socket.on("close", () => {
       if (session) {
-        const timer = this.respawnTimers.get(session.armyId);
-        if (timer) {
-          clearTimeout(timer);
-          this.respawnTimers.delete(session.armyId);
+        if (session.armyId) {
+          const timer = this.respawnTimers.get(session.armyId);
+          if (timer) {
+            clearTimeout(timer);
+            this.respawnTimers.delete(session.armyId);
+          }
+          this.world.removeArmy(session.armyId);
         }
-        this.world.removeArmy(session.armyId);
         this.sessions.delete(session);
         this.broadcastRoster();
       }
@@ -149,6 +154,7 @@ export class GameServer {
         armyId: army.id, name: army.name, color: army.color,
         spawnX: army.spawnX, spawnY: army.spawnY,
         stats,
+        spectator: false,
       },
       world: WORLD,
       serverNow: now,
@@ -160,7 +166,45 @@ export class GameServer {
     return session;
   }
 
+  /** Spectator: no army, no stats, free camera. */
+  private handleSpectatorJoin(socket: WebSocket, name: string): Session {
+    const session: Session = {
+      armyId: null,
+      socket,
+      name: name || "anon-spectator",
+      known: new Map(),
+      // Default focus to (0,0) — first army's spawn. Spectator can pan.
+      focus: { x: 0, y: 0 },
+      forwardDirty: new Set(),
+    };
+    this.sessions.add(session);
+    const now = Date.now();
+    send(socket, {
+      t: "welcome",
+      you: {
+        armyId: null,
+        name: session.name,
+        color: "#888888",
+        spawnX: 0, spawnY: 0,
+        stats: { elo: 0, wins: 0, losses: 0, kills: 0, deaths: 0 },
+        spectator: true,
+      },
+      world: WORLD,
+      serverNow: now,
+    });
+    const visible = this.world.piecesInZones(interestZones(session.focus.x, session.focus.y));
+    for (const p of visible) session.known.set(p.id, { x: p.x, y: p.y, readyAt: p.readyAt, forwardKey: forwardKey(p.forward) });
+    send(socket, { t: "snapshot", pieces: visible, serverNow: now });
+    // Roster comes from broadcastRoster on the next state change; send now too.
+    this.broadcastRoster();
+    return session;
+  }
+
   private handleMessage(session: Session, msg: ClientMessage): void {
+    // Spectators may pan their focus (interest streaming) but nothing else.
+    if (!session.armyId && msg.t !== "focus" && msg.t !== "ping") {
+      return;
+    }
     switch (msg.t) {
       case "pieceMove": {
         const piece = this.world.getPiece(msg.pieceId);

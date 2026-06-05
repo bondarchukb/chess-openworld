@@ -11,12 +11,27 @@
  * piece.
  */
 
-import { Application, Container, Graphics, Text } from "pixi.js";
+import { Application, Assets, Container, Graphics, Sprite, Text, Texture } from "pixi.js";
 import { PieceRegistry, STANDARD_PIECES, legalMovesPlaneFiltered, type Occupant } from "@chess-openworld/engine";
 import { WORLD } from "@chess-openworld/protocol";
 import type { Piece, PieceId, SelfInfo } from "@chess-openworld/protocol";
 import { Connection } from "./net.js";
-import { CELL, pieceGlyph, tileColor, worldToScreen } from "./iso.js";
+import { CELL, tileColor, worldToScreen } from "./iso.js";
+
+const PIECE_SVG: Record<string, string> = {
+  king: "/pieces/wK.svg",
+  queen: "/pieces/wQ.svg",
+  rook: "/pieces/wR.svg",
+  bishop: "/pieces/wB.svg",
+  knight: "/pieces/wN.svg",
+  pawn: "/pieces/wP.svg",
+};
+const pieceTextures: Record<string, Texture> = {};
+async function preloadPieceTextures(): Promise<void> {
+  for (const [type, path] of Object.entries(PIECE_SVG)) {
+    pieceTextures[type] = await Assets.load(path);
+  }
+}
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 2.5;
@@ -27,12 +42,17 @@ const wsProto = location.protocol === "https:" ? "wss" : "ws";
 // cloudflared/ngrok tunnels forward WebSocket upgrades transparently.
 const wsUrl = envUrl ?? `${wsProto}://${location.host}/ws`;
 
-const statusEl = document.getElementById("status")!;
-const infoEl = document.getElementById("board")!;
+const nameEl = document.getElementById("hud-name")!;
+const statsEl = document.getElementById("hud-stats")!;
+const hintEl = document.getElementById("hud-hint")!;
+const connDot = document.getElementById("conn-dot")!;
+const helpBtn = document.getElementById("help-btn") as HTMLButtonElement;
+const helpOverlay = document.getElementById("help-overlay") as HTMLDivElement;
+const helpClose = document.getElementById("help-close") as HTMLButtonElement;
 const entryEl = document.getElementById("entry") as HTMLDivElement;
 const entryNameEl = document.getElementById("entry-name") as HTMLInputElement;
 const entryJoinEl = document.getElementById("entry-join") as HTMLButtonElement;
-const changeNameEl = document.getElementById("change-name") as HTMLButtonElement;
+const skillbarEl = document.getElementById("skillbar") as HTMLDivElement;
 const deadEl = document.getElementById("dead-overlay") as HTMLDivElement;
 const deadReasonEl = document.getElementById("dead-reason")!;
 const deadEloEl = document.getElementById("dead-elo")!;
@@ -42,18 +62,33 @@ const { name, spawnMode } = await chooseName();
 localStorage.setItem("chess-mmo:name", name);
 localStorage.setItem("chess-mmo:spawnMode", spawnMode);
 
-const conn = new Connection(wsUrl, name, spawnMode);
-conn.onStatus = (t) => (statusEl.textContent = t);
-changeNameEl.style.display = "block";
-changeNameEl.addEventListener("click", () => {
-  // Disconnect + reload is simpler than tearing down all Pixi state.
-  localStorage.removeItem("chess-mmo:name");
-  location.reload();
-});
+const asSpectator = spawnMode === "spectator";
+const conn = new Connection(wsUrl, name, asSpectator ? "classical" : spawnMode, asSpectator);
+conn.onStatus = (t) => {
+  // Map server status text to dot color. No more text noise in HUD.
+  let color = "#888";
+  if (t.startsWith("in world") || t === "respawned") color = "#88ee66";
+  else if (t.startsWith("connecting") || t.includes("joining")) color = "#ffd86b";
+  else if (t.includes("disconnect") || t.includes("error") || t === "dead") color = "#ff5577";
+  connDot.style.background = color;
+  connDot.title = t;
+};
 
-async function chooseName(): Promise<{ name: string; spawnMode: "classical" | "blob" }> {
+// Help modal toggling.
+function toggleHelp(show?: boolean): void {
+  const visible = helpOverlay.style.display === "flex";
+  const next = show ?? !visible;
+  helpOverlay.style.display = next ? "flex" : "none";
+}
+helpBtn.addEventListener("click", () => toggleHelp());
+helpClose.addEventListener("click", () => toggleHelp(false));
+helpOverlay.addEventListener("click", (e) => { if (e.target === helpOverlay) toggleHelp(false); });
+
+type EntryMode = "classical" | "blob" | "spectator";
+
+async function chooseName(): Promise<{ name: string; spawnMode: EntryMode }> {
   const stored = localStorage.getItem("chess-mmo:name")?.trim();
-  const storedMode = localStorage.getItem("chess-mmo:spawnMode") as "classical" | "blob" | null;
+  const storedMode = localStorage.getItem("chess-mmo:spawnMode") as EntryMode | null;
   entryNameEl.value = stored ?? "";
   if (storedMode) {
     const radio = document.querySelector<HTMLInputElement>(`input[name="spawn-mode"][value="${storedMode}"]`);
@@ -69,7 +104,8 @@ async function chooseName(): Promise<{ name: string; spawnMode: "classical" | "b
         return;
       }
       const modeEl = document.querySelector<HTMLInputElement>('input[name="spawn-mode"]:checked');
-      const mode = (modeEl?.value === "blob" ? "blob" : "classical") as "classical" | "blob";
+      const raw = modeEl?.value;
+      const mode: EntryMode = raw === "blob" || raw === "spectator" ? raw : "classical";
       entryEl.style.display = "none";
       resolve({ name: v, spawnMode: mode });
     };
@@ -85,13 +121,15 @@ const registry = new PieceRegistry(STANDARD_PIECES);
 const app = new Application();
 await app.init({ background: "#15102a", resizeTo: window, antialias: true });
 document.body.appendChild(app.canvas);
+await preloadPieceTextures();
 
 const scene = new Container();
 const groundLayer = new Graphics();
 const overlayLayer = new Container();
 const pieceLayer = new Container();
 const cooldownLayer = new Graphics();
-scene.addChild(groundLayer, overlayLayer, pieceLayer, cooldownLayer);
+const fxLayer = new Container();
+scene.addChild(groundLayer, overlayLayer, pieceLayer, cooldownLayer, fxLayer);
 app.stage.addChild(scene);
 /** Screen-space layer (not scaled by camera) for compass arrows etc. */
 const uiLayer = new Container();
@@ -106,7 +144,6 @@ let legalTargets: Set<string> = new Set();
 conn.onWelcome = (you: SelfInfo) => {
   camera.cx = you.spawnX;
   camera.cy = you.spawnY;
-  infoEl.textContent = `Army color ${you.color} — center on (${you.spawnX}, ${you.spawnY})`;
 };
 conn.onDead = (info) => {
   selectedPiece = null;
@@ -115,11 +152,11 @@ conn.onDead = (info) => {
   deadReasonEl.textContent = `${info.reason} by ${info.killerName} (ELO ${info.killerElo})`;
   const sign = info.eloDelta >= 0 ? "+" : "";
   deadEloEl.innerHTML = `your ELO: <b style="color:${info.eloDelta < 0 ? "#ff5577" : "#88ee66"}">${info.newStats.elo} (${sign}${info.eloDelta})</b>`;
-  statusEl.textContent = `dead`;
+  conn.onStatus("dead");
 };
 conn.onRespawned = () => {
   deadEl.style.display = "none";
-  statusEl.textContent = `respawned`;
+  conn.onStatus("respawned");
 };
 
 // ---- keyboard --------------------------------------------------------------
@@ -142,15 +179,21 @@ window.addEventListener("keydown", (e) => {
     }
   }
   if (e.key === "Escape") {
-    selectedPiece = null;
-    legalTargets = new Set();
+    if (helpOverlay.style.display === "flex") {
+      toggleHelp(false);
+    } else {
+      selectedPiece = null;
+      legalTargets = new Set();
+    }
+  }
+  if (e.key === "?" || (e.key === "/" && e.shiftKey)) {
+    toggleHelp();
   }
   if (e.key === "g" || e.key === "G") {
     const target = nearestEnemySpawn();
     if (target) {
       camera.cx = target.spawnX;
       camera.cy = target.spawnY;
-      statusEl.textContent = `jumped to ${target.name} at (${target.spawnX}, ${target.spawnY})`;
     }
   }
   // Reorient hotkeys (only for selected own pawn).
@@ -259,7 +302,7 @@ function nearestEnemySpawn(): { name: string; color: string; spawnX: number; spa
 function selectAndComputeMoves(piece: Piece): void {
   if (!conn.self) return;
   if (conn.serverNow() < piece.readyAt) {
-    statusEl.textContent = `on cooldown ${((piece.readyAt - conn.serverNow()) / 1000).toFixed(1)}s`;
+    hintEl.textContent = `on cooldown ${((piece.readyAt - conn.serverNow()) / 1000).toFixed(1)}s`;
     selectedPiece = null;
     legalTargets = new Set();
     return;
@@ -422,13 +465,21 @@ app.ticker.add((tk) => {
       pool.set(key, node);
     }
     const { sx, sy } = worldToScreen(piece.x, piece.y);
-    node.position.set(sx, sy);
+    // Tween toward target instead of teleporting. Lerp factor tuned so a
+    // 1-tile move takes ~150 ms at 60 fps.
+    if (node.position.x === 0 && node.position.y === 0) {
+      // First appearance: snap to target so we don't fly in from origin.
+      node.position.set(sx, sy);
+    } else {
+      node.position.x += (sx - node.position.x) * 0.35;
+      node.position.y += (sy - node.position.y) * 0.35;
+    }
     // Fade piece while cooling down; full opacity when ready.
     const now = conn.serverNow();
     const remaining = piece.readyAt - now;
     if (remaining > 0) {
       const frac = Math.min(1, remaining / WORLD.pieceCooldownMs);
-      node.alpha = 0.45 + 0.55 * (1 - frac); // 0.45 just after move → 1.0 when ready
+      node.alpha = 0.45 + 0.55 * (1 - frac);
     } else {
       node.alpha = 1;
     }
@@ -436,10 +487,14 @@ app.ticker.add((tk) => {
   }
   for (const [key, node] of pool) {
     if (!used.has(key)) {
+      // Spawn a capture/leave flash at the piece's last known position.
+      spawnCaptureFlash(node.position.x, node.position.y);
       node.destroy({ children: true });
       pool.delete(key);
     }
   }
+  // Tick the active capture flashes.
+  tickCaptureFlashes(app.ticker.deltaMS);
 
   // Cooldown bars: thin shrinking bar under each cooling piece.
   cooldownLayer.clear();
@@ -542,14 +597,26 @@ function renderHud(): void {
   for (const p of conn.pieces.values()) if (p.owner === conn.self.armyId) alive++;
   const enemyCount = conn.roster.filter((a) => a.id !== conn.self!.armyId).length;
   const s = conn.stats;
-  const statsStr = s ? `ELO ${s.elo} · W ${s.wins}/L ${s.losses}` : "";
-  const nearest = nearestEnemySpawn();
-  const nearestStr = nearest
-    ? ` · nearest ${nearest.name} (ELO ${nearest.elo ?? "?"}) at (${nearest.spawnX}, ${nearest.spawnY}) — G to jump`
-    : " · no enemies online";
-  infoEl.textContent =
-    `${conn.self.name} · ${statsStr} · pieces ${alive} · ` +
-    `cam (${Math.round(camera.cx)}, ${Math.round(camera.cy)}) · ${enemyCount} enemies${nearestStr}`;
+
+  nameEl.textContent = conn.self.name;
+  statsEl.textContent = s
+    ? `ELO ${s.elo} · W ${s.wins}/L ${s.losses} · ${alive} pieces · ${enemyCount} enemies online`
+    : `${alive} pieces · ${enemyCount} enemies online`;
+
+  // Contextual bottom hint.
+  let hint = "click a piece to act";
+  if (selectedPiece !== null) {
+    const p = conn.pieces.get(selectedPiece);
+    if (p?.type === "pawn") hint = "click target · 1/2/3/4 reorient · Esc";
+    else hint = "click target · Esc to deselect";
+  } else if (enemyCount > 0) {
+    hint = "click a piece to act · G to find enemy · ? for help";
+  } else {
+    hint = "no enemies online — pan with WASD";
+  }
+  hintEl.textContent = hint;
+
+  renderSkillbar();
 
   // Dead-countdown updater (cheap).
   if (conn.dead) {
@@ -565,31 +632,50 @@ function clamp(v: number, lo: number, hi: number): number {
 function makePieceNode(piece: Piece, myArmyId: string): Container {
   const c = new Container();
   const isMine = piece.owner === myArmyId;
-  // Filled disc behind the glyph carries the army color.
-  const disc = new Graphics()
-    .circle(0, 0, CELL * 0.38)
-    .fill({ color: parseColor(piece.color) })
-    .stroke({ color: isMine ? 0xffffff : 0x000000, width: isMine ? 3 : 2, alpha: isMine ? 0.9 : 0.6 });
-  c.addChild(disc);
-  // Royalty highlight.
+  const armyColor = parseColor(piece.color);
+
+  // Faint colored backdrop so the army is identifiable at low zoom / from far.
+  const backdrop = new Graphics()
+    .circle(0, 0, CELL * 0.42)
+    .fill({ color: armyColor, alpha: 0.22 });
+  c.addChild(backdrop);
+
+  // Royal halo for the king.
   if (piece.type === "king") {
     const crown = new Graphics()
-      .circle(0, 0, CELL * 0.45)
-      .stroke({ color: 0xffd86b, width: 2, alpha: 0.9 });
+      .circle(0, 0, CELL * 0.5)
+      .stroke({ color: 0xffd86b, width: 2, alpha: 0.85 });
     c.addChild(crown);
   }
-  // Glyph (black or white depending on color brightness for legibility).
-  const text = new Text({
-    text: pieceGlyph(piece.type),
-    style: {
-      fontFamily: "serif",
-      fontSize: CELL * 0.7,
-      fill: glyphFill(piece.color),
-      stroke: { color: 0x000000, width: 2 },
-    },
-  });
-  text.anchor.set(0.5, 0.55);
-  c.addChild(text);
+
+  // Vector piece: white fill in the SVG, tinted to the army color. Black
+  // outline in the SVG is preserved through tint (black × anything = black).
+  const tex = pieceTextures[piece.type];
+  if (tex) {
+    const sprite = new Sprite(tex);
+    sprite.anchor.set(0.5);
+    // Force the rendered size independent of how Pixi rasterized the SVG.
+    sprite.width = CELL * 0.85;
+    sprite.height = CELL * 0.85;
+    sprite.tint = armyColor;
+    c.addChild(sprite);
+  } else {
+    // Fallback if texture missing.
+    const t = new Text({
+      text: "?",
+      style: { fontFamily: "serif", fontSize: CELL * 0.6, fill: 0xffffff },
+    });
+    t.anchor.set(0.5);
+    c.addChild(t);
+  }
+
+  // Selection-team ring (own pieces): bright white outline, larger for visibility.
+  if (isMine) {
+    const ring = new Graphics()
+      .circle(0, 0, CELL * 0.46)
+      .stroke({ color: 0xffffff, width: 2, alpha: 0.7 });
+    c.addChild(ring);
+  }
   return c;
 }
 
@@ -597,13 +683,105 @@ function parseColor(hex: string): number {
   return parseInt(hex.replace("#", ""), 16);
 }
 
-function glyphFill(bgHex: string): number {
-  const n = parseColor(bgHex);
-  const r = (n >> 16) & 0xff;
-  const g = (n >> 8) & 0xff;
-  const b = n & 0xff;
-  const luma = (r * 299 + g * 587 + b * 114) / 1000;
-  return luma > 140 ? 0x111111 : 0xffffff;
+interface Flash {
+  x: number;
+  y: number;
+  age: number; // ms
+  g: Graphics;
+}
+const flashes: Flash[] = [];
+const FLASH_LIFETIME = 420;
+
+/**
+ * Skill kit per piece type. Most are placeholders that will light up as the
+ * skill system in SPEC.md ships. Reorient is the only fully working skill;
+ * the rest show as "locked" tooltips so the panel still feels alive.
+ */
+interface SkillSlot {
+  id: string;
+  icon: string;
+  name: string;
+  key: string;
+  live: boolean;
+}
+const SKILL_KIT: Record<string, SkillSlot[]> = {
+  pawn: [
+    { id: "reorient", icon: "↻", name: "Reorient (1/2/3/4)", key: "↻", live: true },
+    { id: "lock-shield", icon: "🛡", name: "Lock Shield (coming)", key: "Q", live: false },
+  ],
+  knight: [
+    { id: "charge", icon: "⚡", name: "Cavalry Charge (coming)", key: "Q", live: false },
+    { id: "hoof", icon: "💢", name: "Hoofquake (coming)", key: "W", live: false },
+  ],
+  bishop: [
+    { id: "beam", icon: "✦", name: "Beam (coming)", key: "Q", live: false },
+    { id: "bless", icon: "✨", name: "Bless (coming)", key: "W", live: false },
+  ],
+  rook: [
+    { id: "quake", icon: "💥", name: "Quake (coming)", key: "Q", live: false },
+    { id: "wall", icon: "🧱", name: "Wall (coming)", key: "W", live: false },
+  ],
+  queen: [
+    { id: "teleport", icon: "✧", name: "Swap-Teleport (coming)", key: "Q", live: false },
+    { id: "storm", icon: "⛈", name: "Storm (coming)", key: "W", live: false },
+  ],
+  king: [
+    { id: "rally", icon: "📢", name: "Rally (coming)", key: "Q", live: false },
+    { id: "stand", icon: "🛡", name: "Last Stand (coming)", key: "W", live: false },
+  ],
+};
+
+function renderSkillbar(): void {
+  if (selectedPiece === null) {
+    skillbarEl.style.display = "none";
+    return;
+  }
+  const piece = conn.pieces.get(selectedPiece);
+  if (!piece || piece.owner !== conn.self?.armyId) {
+    skillbarEl.style.display = "none";
+    return;
+  }
+  const kit = SKILL_KIT[piece.type] ?? [];
+  const html = kit
+    .map((s) => {
+      const cls = "skill" + (s.live ? "" : " locked");
+      return `<div class="${cls}" title="${s.name}">
+        <span class="name">${s.name}</span>
+        <span>${s.icon}</span>
+        <span class="key">${s.key}</span>
+      </div>`;
+    })
+    .join("");
+  if (html !== skillbarEl.innerHTML) skillbarEl.innerHTML = html;
+  skillbarEl.style.display = "flex";
+}
+
+function spawnCaptureFlash(x: number, y: number): void {
+  const g = new Graphics();
+  fxLayer.addChild(g);
+  flashes.push({ x, y, age: 0, g });
+}
+
+function tickCaptureFlashes(deltaMs: number): void {
+  for (let i = flashes.length - 1; i >= 0; i--) {
+    const f = flashes[i]!;
+    f.age += deltaMs;
+    const t = f.age / FLASH_LIFETIME;
+    if (t >= 1) {
+      f.g.destroy();
+      flashes.splice(i, 1);
+      continue;
+    }
+    f.g.clear();
+    const radius = CELL * (0.2 + t * 0.7);
+    const alpha = 1 - t;
+    f.g
+      .circle(f.x, f.y, radius)
+      .stroke({ color: 0xffe066, width: 3, alpha });
+    f.g
+      .circle(f.x, f.y, radius * 0.6)
+      .stroke({ color: 0xff5577, width: 2, alpha: alpha * 0.6 });
+  }
 }
 
 /** Small chevron at the edge of a cell pointing in dir. */

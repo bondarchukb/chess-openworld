@@ -47,11 +47,16 @@ export class Connection {
   onDead: (info: DeadInfo) => void = () => {};
   onRespawned: () => void = () => {};
 
-  constructor(url: string, private playerName: string, private spawnMode: "classical" | "blob" = "classical") {
+  constructor(
+    url: string,
+    private playerName: string,
+    private spawnMode: "classical" | "blob" = "classical",
+    private asSpectator: boolean = false,
+  ) {
     this.socket = new WebSocket(url);
     this.socket.addEventListener("open", () => {
       this.onStatus("connected — joining…");
-      this.send({ t: "join", name: this.playerName, spawnMode: this.spawnMode });
+      this.send({ t: "join", name: this.playerName, spawnMode: this.spawnMode, asSpectator: this.asSpectator });
     });
     this.socket.addEventListener("close", () => this.onStatus("disconnected"));
     this.socket.addEventListener("error", () => this.onStatus("connection error"));

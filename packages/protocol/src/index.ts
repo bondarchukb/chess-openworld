@@ -11,8 +11,13 @@ export const WORLD = {
   zoneSize: 24,
   /** Server simulation rate. */
   tickHz: 10,
-  /** Cooldown after a piece moves, in milliseconds. */
+  /** Cooldown after a piece moves while an enemy is within `combatRadius`. */
   pieceCooldownMs: 6000,
+  /** Reduced cooldown when no enemy is within `combatRadius`. Lets armies
+   * march across empty space without painful wait times. */
+  travelCooldownMs: 1500,
+  /** Radius (tiles) within which a piece is considered "in combat". */
+  combatRadius: 12,
   /** Cooldown after a pawn reorients (long; reorient costs a real action). */
   reorientCooldownMs: 20000,
   /** How long the death overlay shows before an army respawns. */
@@ -49,7 +54,7 @@ export interface Piece {
 export type SpawnMode = "classical" | "blob";
 
 export type ClientMessage =
-  | { t: "join"; name: string; spawnMode?: SpawnMode }
+  | { t: "join"; name: string; spawnMode?: SpawnMode; asSpectator?: boolean }
   /** Move one of your pieces. Server validates ownership, legality, cooldown. */
   | { t: "pieceMove"; pieceId: PieceId; toX: number; toY: number }
   /** Rotate a pawn's forward direction. Long cooldown; only legal on pawns. */
@@ -69,13 +74,15 @@ export interface PlayerStats {
 }
 
 export interface SelfInfo {
-  armyId: ArmyId;
+  /** null when joined as a spectator (no army). */
+  armyId: ArmyId | null;
   name: string;
   color: string;
   /** Spawn center, used by client to center camera initially. */
   spawnX: number;
   spawnY: number;
   stats: PlayerStats;
+  spectator: boolean;
 }
 
 export type ServerMessage =

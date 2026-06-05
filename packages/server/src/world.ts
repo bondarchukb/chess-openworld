@@ -207,7 +207,9 @@ export class World {
     }
     this.movePieceTo(piece, toX, toY);
     piece.hasMoved = true;
-    piece.readyAt = nowMs + WORLD.pieceCooldownMs;
+    // Travel cooldown if no enemy nearby after the move; combat cooldown otherwise.
+    const inCombat = this.enemyWithin(piece.owner, toX, toY, WORLD.combatRadius);
+    piece.readyAt = nowMs + (inCombat ? WORLD.pieceCooldownMs : WORLD.travelCooldownMs);
 
     // 4) Recompute check + mate for every other army. (Cheap: one square-attack
     //    check per army for `inCheck`; mate check only when in check.)
@@ -276,6 +278,15 @@ export class World {
     for (const p of this.pieces.values()) {
       yield { ...this.planePieceOf(p), x: p.x, y: p.y };
     }
+  }
+
+  /** True if any enemy piece sits within `r` Chebyshev tiles of (x, y). */
+  private enemyWithin(ownerId: ArmyId, x: number, y: number, r: number): boolean {
+    for (const p of this.pieces.values()) {
+      if (p.owner === ownerId) continue;
+      if (Math.max(Math.abs(p.x - x), Math.abs(p.y - y)) <= r) return true;
+    }
+    return false;
   }
 
   private kingPosOf(armyId: ArmyId): { x: number; y: number } | null {
@@ -490,9 +501,9 @@ export class World {
       }
       return true;
     };
-    // Start ~20 tiles out (just outside the target army's ranks, inside its
-    // 3x3 zone interest set so both players see each other on join), step out.
-    for (let d = 20; d < 200; d += 8) {
+    // Start ~8 tiles out — close enough to start fighting within a couple
+    // of moves, far enough that you aren't spawn-camped on tick 1.
+    for (let d = 8; d < 200; d += 6) {
       const cx = target.spawnX + side[0] * d;
       const cy = target.spawnY + side[1] * d;
       if (isClear(cx, cy)) return { cx, cy, forward: fwd };

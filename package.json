@@ -14,7 +14,9 @@
     "dev": "concurrently -n server,client -c green,cyan \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "npm run start -w @chess-openworld/server",
     "dev:client": "npm run dev -w @chess-openworld/client",
-    "share": "concurrently -n server,client,tunnel -c green,cyan,magenta \"npm:dev:server\" \"npm:dev:client\" \"cloudflared tunnel --url http://localhost:5173\""
+    "share": "concurrently -n server,client,tunnel -c green,cyan,magenta \"npm:dev:server\" \"npm:dev:client\" \"cloudflared tunnel --url http://localhost:5173\"",
+    "bots": "npm run start -w @chess-openworld/bots --",
+    "watch": "concurrently -n server,client,bots -c green,cyan,yellow \"npm:dev:server\" \"npm:dev:client\" \"sleep 4 && npm run bots -- 4\""
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

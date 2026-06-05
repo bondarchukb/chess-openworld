@@ -1,0 +1,22 @@
+{
+  "name": "@chess-openworld/bots",
+  "version": "0.0.0",
+  "description": "Autonomous bot clients that connect to the world and play chess.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/run.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@chess-openworld/engine": "*",
+    "@chess-openworld/protocol": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
