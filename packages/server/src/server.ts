@@ -18,6 +18,7 @@ import {
   zoneOf,
   type ArmyId,
   type ClientMessage,
+  type GameMode,
   type Piece,
   type PieceId,
   type ServerMessage,
@@ -99,7 +100,7 @@ export class GameServer {
         if (session) return;
         session = msg.asSpectator
           ? this.handleSpectatorJoin(socket, msg.name)
-          : this.handleJoin(socket, msg.name, msg.spawnMode ?? "classical");
+          : this.handleJoin(socket, msg.name, msg.spawnMode ?? "classical", msg.gameMode ?? "open");
         return;
       }
       if (!session) return send(socket, { t: "error", message: "join first" });
@@ -132,17 +133,59 @@ export class GameServer {
         elo: s.elo,
         sats: s.sats,
         dead: a.dead,
+        gameMode: a.gameMode,
+        inArena: a.gameMode === "domination" && !a.dead && this.world.armyHasPieceInArena(a.id),
       };
     });
     const msg: ServerMessage = { t: "roster", armies };
     for (const s of this.sessions) send(s.socket, msg);
+    this.checkDominationWinner();
   }
 
-  private handleJoin(socket: WebSocket, name: string, spawnMode: "classical" | "blob"): Session {
+  /** When exactly one domination army still has presence in the arena, the
+   * match is over. Award them the sum of all their opponents' current sats
+   * (winner takes all the altar stakes). */
+  private checkDominationWinner(): void {
+    const dominationArmies = [...this.world.armies.values()].filter((a) => a.gameMode === "domination" && !a.dead);
+    if (dominationArmies.length < 2) return;
+    const present = dominationArmies.filter((a) => this.world.armyHasPieceInArena(a.id));
+    if (present.length !== 1) return;
+    const winner = present[0]!;
+    let jackpot = 0;
+    for (const loser of dominationArmies) {
+      if (loser.id === winner.id) continue;
+      const s = this.stats.get(loser.name);
+      jackpot += s.sats;
+      s.sats = 0;
+    }
+    this.stats.get(winner.name).sats += jackpot;
+    const msg: ServerMessage = {
+      t: "dominationWin",
+      winnerName: winner.name,
+      winnerArmyId: winner.id,
+      satsJackpot: jackpot,
+    };
+    for (const s of this.sessions) send(s.socket, msg);
+    // Reset arena: respawn every domination army so the next match starts fresh.
+    for (const a of dominationArmies) {
+      this.stats.chargeSpawn(a.name);
+      this.world.respawnArmy(a);
+      const sess = [...this.sessions].find((s) => s.armyId === a.id);
+      if (sess) sess.focus = { x: a.spawnX, y: a.spawnY };
+    }
+    void this.persistStats();
+  }
+
+  private handleJoin(
+    socket: WebSocket,
+    name: string,
+    spawnMode: "classical" | "blob",
+    gameMode: GameMode,
+  ): Session {
     // Charge spawn cost up front. Broke players still get an army (partial
     // charge) — losing pieces will be the real penalty.
     this.stats.chargeSpawn(name || "anon");
-    const army = this.world.spawnArmy(name || "anon", spawnMode);
+    const army = this.world.spawnArmy(name || "anon", spawnMode, gameMode);
     const session: Session = {
       armyId: army.id,
       socket,
@@ -226,7 +269,10 @@ export class GameServer {
           send(session.socket, { t: "error", message: res.reason });
           return;
         }
-        let rosterDirty = res.checkChanged || res.matedArmies.length > 0;
+        // Always recompute roster when any domination match is live — the
+        // inArena flag is what tells clients who's still in the running.
+        const anyDomination = [...this.world.armies.values()].some((a) => a.gameMode === "domination");
+        let rosterDirty = res.checkChanged || res.matedArmies.length > 0 || anyDomination;
         // Per-piece sat transfer for any non-king capture.
         if (res.captured && !res.capturedKingOf) {
           const victimArmy = this.world.getArmy(res.captured.owner);

@@ -23,9 +23,11 @@ import {
   type PlanePiece,
 } from "@chess-openworld/engine";
 import {
+  ARENA,
   WORLD,
   zoneOf,
   type ArmyId,
+  type GameMode,
   type Piece,
   type PieceId,
   type SpawnMode,
@@ -47,6 +49,8 @@ export interface Army {
   dead: boolean;
   /** Layout chosen at join time; used on every respawn for this player. */
   spawnMode: SpawnMode;
+  /** Top-level game mode. Domination armies share the arena. */
+  gameMode: GameMode;
 }
 
 export interface PersistedWorld {
@@ -99,10 +103,12 @@ export class World {
 
   // ---- army lifecycle -------------------------------------------------------
 
-  spawnArmy(name: string, spawnMode: SpawnMode = "classical"): Army {
+  spawnArmy(name: string, spawnMode: SpawnMode = "classical", gameMode: GameMode = "open"): Army {
     const armyId = `a${this.nextArmyId++}`;
     const color = PALETTE[(this.nextArmyId - 2) % PALETTE.length] ?? "#ffffff";
-    const { cx, cy, forward } = this.findClearSpawn();
+    const { cx, cy, forward } = gameMode === "domination"
+      ? this.findArenaSpawn()
+      : this.findClearSpawn();
     const army: Army = {
       id: armyId,
       name,
@@ -114,6 +120,7 @@ export class World {
       inCheck: false,
       dead: false,
       spawnMode,
+      gameMode,
     };
     this.armies.set(armyId, army);
     this.placeArmy(army);
@@ -139,7 +146,9 @@ export class World {
 
   respawnArmy(army: Army): void {
     for (const pid of [...army.pieces]) this.removePiece(pid);
-    const { cx, cy, forward } = this.findClearSpawn();
+    const { cx, cy, forward } = army.gameMode === "domination"
+      ? this.findArenaSpawn()
+      : this.findClearSpawn();
     army.spawnX = cx;
     army.spawnY = cy;
     army.forward = forward;
@@ -285,6 +294,35 @@ export class World {
     for (const p of this.pieces.values()) {
       yield { ...this.planePieceOf(p), x: p.x, y: p.y };
     }
+  }
+
+  /** Does this army have at least one piece strictly inside the arena? */
+  armyHasPieceInArena(armyId: ArmyId): boolean {
+    const army = this.armies.get(armyId);
+    if (!army) return false;
+    for (const pid of army.pieces) {
+      const p = this.pieces.get(pid);
+      if (!p) continue;
+      if (Math.max(Math.abs(p.x - ARENA.centerX), Math.abs(p.y - ARENA.centerY)) <= ARENA.halfSize) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Domination spawn: pick a side of the arena ring, face the centre. */
+  private findArenaSpawn(): { cx: number; cy: number; forward: [number, number] } {
+    const dirs: [number, number][] = [[0, -1], [0, 1], [1, 0], [-1, 0]];
+    const dominationArmies = [...this.armies.values()].filter((a) => a.gameMode === "domination");
+    const sideIdx = dominationArmies.length % 4;
+    const side = dirs[sideIdx]!;
+    // Face the centre = forward points opposite to side direction.
+    const fwd: [number, number] = [-side[0], -side[1]];
+    // Spawn 2 tiles inside the arena edge.
+    const inset = ARENA.halfSize - 2;
+    const cx = ARENA.centerX + side[0] * inset;
+    const cy = ARENA.centerY + side[1] * inset;
+    return { cx, cy, forward: fwd };
   }
 
   /** True if any enemy piece sits within `r` Chebyshev tiles of (x, y). */

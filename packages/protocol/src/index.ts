@@ -74,8 +74,20 @@ export interface Piece {
 /** How an army's pieces are arranged on first spawn. */
 export type SpawnMode = "classical" | "blob";
 
+/** Top-level game mode. Open world = roam infinite plane. Domination = play
+ * inside a bounded arena, last surviving player wins. */
+export type GameMode = "open" | "domination";
+
+/** Domination arena geometry. Tiles strictly inside count as "in arena". */
+export const ARENA = {
+  centerX: 0,
+  centerY: 0,
+  /** Half-extent (Chebyshev). Arena is (2·halfSize + 1) tiles per side. */
+  halfSize: 10,
+} as const;
+
 export type ClientMessage =
-  | { t: "join"; name: string; spawnMode?: SpawnMode; asSpectator?: boolean }
+  | { t: "join"; name: string; spawnMode?: SpawnMode; gameMode?: GameMode; asSpectator?: boolean }
   /** Move one of your pieces. Server validates ownership, legality, cooldown. */
   | { t: "pieceMove"; pieceId: PieceId; toX: number; toY: number }
   /** Rotate a pawn's forward direction. Long cooldown; only legal on pawns. */
@@ -150,8 +162,13 @@ export type ServerMessage =
         elo: number;
         sats: number;
         dead: boolean;
+        gameMode: GameMode;
+        /** Domination only: does this army still have ≥1 piece inside the arena? */
+        inArena: boolean;
       }[];
     }
+  /** Domination match concluded with a single survivor. */
+  | { t: "dominationWin"; winnerName: string; winnerArmyId: ArmyId; satsJackpot: number }
   | { t: "error"; message: string }
   | { t: "pong" };
 

@@ -6,6 +6,7 @@
 import type {
   ArmyId,
   ClientMessage,
+  GameMode,
   Piece,
   PieceId,
   PlayerStats,
@@ -23,6 +24,8 @@ export interface RosterEntry {
   elo: number;
   sats: number;
   dead: boolean;
+  gameMode: GameMode;
+  inArena: boolean;
 }
 
 export interface DeadInfo {
@@ -48,17 +51,25 @@ export class Connection {
   onWelcome: (self: SelfInfo) => void = () => {};
   onDead: (info: DeadInfo) => void = () => {};
   onRespawned: () => void = () => {};
+  onDominationWin: (info: { winnerName: string; winnerArmyId: ArmyId; satsJackpot: number }) => void = () => {};
 
   constructor(
     url: string,
     private playerName: string,
     private spawnMode: "classical" | "blob" = "classical",
     private asSpectator: boolean = false,
+    private gameMode: GameMode = "open",
   ) {
     this.socket = new WebSocket(url);
     this.socket.addEventListener("open", () => {
       this.onStatus("connected — joining…");
-      this.send({ t: "join", name: this.playerName, spawnMode: this.spawnMode, asSpectator: this.asSpectator });
+      this.send({
+        t: "join",
+        name: this.playerName,
+        spawnMode: this.spawnMode,
+        asSpectator: this.asSpectator,
+        gameMode: this.gameMode,
+      });
     });
     this.socket.addEventListener("close", () => this.onStatus("disconnected"));
     this.socket.addEventListener("error", () => this.onStatus("connection error"));
@@ -131,6 +142,13 @@ export class Connection {
         break;
       case "roster":
         this.roster = msg.armies;
+        break;
+      case "dominationWin":
+        this.onDominationWin({
+          winnerName: msg.winnerName,
+          winnerArmyId: msg.winnerArmyId,
+          satsJackpot: msg.satsJackpot,
+        });
         break;
       case "error":
         this.onStatus(`server: ${msg.message}`);

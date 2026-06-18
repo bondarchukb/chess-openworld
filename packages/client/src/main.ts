@@ -13,7 +13,7 @@
 
 import { Application, Assets, Container, Graphics, Sprite, Text, Texture } from "pixi.js";
 import { PieceRegistry, STANDARD_PIECES, legalMovesPlaneFiltered, type Occupant } from "@chess-openworld/engine";
-import { WORLD } from "@chess-openworld/protocol";
+import { ARENA, WORLD } from "@chess-openworld/protocol";
 import type { Piece, PieceId, SelfInfo } from "@chess-openworld/protocol";
 import { Connection } from "./net.js";
 import { CELL, TILE_DEFS, tileColor, tileTypeAt, worldToScreen } from "./iso.js";
@@ -66,7 +66,10 @@ localStorage.setItem("chess-mmo:name", name);
 localStorage.setItem("chess-mmo:spawnMode", spawnMode);
 
 const asSpectator = spawnMode === "spectator";
-const conn = new Connection(wsUrl, name, asSpectator ? "classical" : spawnMode, asSpectator);
+const gameMode: "open" | "domination" = spawnMode === "domination" ? "domination" : "open";
+const actualSpawnMode: "classical" | "blob" =
+  spawnMode === "blob" ? "blob" : "classical";
+const conn = new Connection(wsUrl, name, actualSpawnMode, asSpectator, gameMode);
 conn.onStatus = (t) => {
   // Map server status text to dot color. No more text noise in HUD.
   let color = "#888";
@@ -87,7 +90,7 @@ helpBtn.addEventListener("click", () => toggleHelp());
 helpClose.addEventListener("click", () => toggleHelp(false));
 helpOverlay.addEventListener("click", (e) => { if (e.target === helpOverlay) toggleHelp(false); });
 
-type EntryMode = "classical" | "blob" | "spectator";
+type EntryMode = "classical" | "blob" | "domination" | "spectator";
 
 async function chooseName(): Promise<{ name: string; spawnMode: EntryMode }> {
   const stored = localStorage.getItem("chess-mmo:name")?.trim();
@@ -108,7 +111,8 @@ async function chooseName(): Promise<{ name: string; spawnMode: EntryMode }> {
       }
       const modeEl = document.querySelector<HTMLInputElement>('input[name="spawn-mode"]:checked');
       const raw = modeEl?.value;
-      const mode: EntryMode = raw === "blob" || raw === "spectator" ? raw : "classical";
+      const mode: EntryMode =
+        raw === "blob" || raw === "spectator" || raw === "domination" ? raw : "classical";
       entryEl.style.display = "none";
       resolve({ name: v, spawnMode: mode });
     };
@@ -165,6 +169,9 @@ conn.onDead = (info) => {
 conn.onRespawned = () => {
   deadEl.style.display = "none";
   conn.onStatus("respawned");
+};
+conn.onDominationWin = (info) => {
+  showDominationBanner(info.winnerName, info.satsJackpot);
 };
 
 // ---- keyboard --------------------------------------------------------------
@@ -408,6 +415,8 @@ app.ticker.add((tk) => {
 
   // Overlay: legal-move highlights, selection ring, pawn facing arrows.
   overlayLayer.removeChildren();
+  // Arena boundary first so it sits behind everything else.
+  drawArenaOverlay();
   // Forward-direction arrow for every visible pawn (always shown).
   for (const piece of conn.pieces.values()) {
     if (piece.type !== "pawn" || !piece.forward) continue;
@@ -822,6 +831,43 @@ function renderSkillbar(): void {
   const def = TILE_DEFS[t];
   tileinfoEl.innerHTML = `Standing on <b>${def.label}</b> — ${def.effect}`;
   actionbarEl.classList.add("visible");
+}
+
+function showDominationBanner(winnerName: string, jackpot: number): void {
+  let el = document.getElementById("dom-banner") as HTMLDivElement | null;
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "dom-banner";
+    el.style.cssText = `position: fixed; top: 25%; left: 50%; transform: translateX(-50%);
+      z-index: 70; background: rgba(31,23,56,.95); color: #ffd86b; padding: 26px 40px;
+      border-radius: 14px; border: 3px solid #ffd86b; font-size: 22px; font-weight: 800;
+      text-align: center; box-shadow: 0 12px 50px #000;`;
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `⚔ DOMINATION ⚔<br/>` +
+    `<span style="color:#fff; font-size:18px;">${winnerName} wins the arena</span><br/>` +
+    `<span style="color:#88ee66; font-size:16px;">+⚡${formatSats(jackpot)} sats jackpot</span>`;
+  el.style.display = "block";
+  setTimeout(() => { if (el) el.style.display = "none"; }, 6000);
+}
+
+function drawArenaOverlay(): void {
+  if (!conn.self) return;
+  // Show the arena only when at least one player is in domination mode.
+  const anyDom = conn.roster.some((a) => a.gameMode === "domination");
+  if (!anyDom) return;
+  const { centerX, centerY, halfSize } = ARENA;
+  const topLeft = worldToScreen(centerX - halfSize, centerY - halfSize);
+  const w = (halfSize * 2 + 1) * CELL;
+  const g = new Graphics()
+    .rect(topLeft.sx - CELL / 2, topLeft.sy - CELL / 2, w, w)
+    .stroke({ color: 0xffd86b, width: 4, alpha: 0.85 });
+  overlayLayer.addChild(g);
+  // Soft gold tint inside.
+  const fill = new Graphics()
+    .rect(topLeft.sx - CELL / 2, topLeft.sy - CELL / 2, w, w)
+    .fill({ color: 0xffd86b, alpha: 0.05 });
+  overlayLayer.addChildAt(fill, 0);
 }
 
 function spawnCaptureFlash(x: number, y: number): void {
