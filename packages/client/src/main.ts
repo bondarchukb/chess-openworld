@@ -96,31 +96,49 @@ async function entryFund(): Promise<void> {
     ov.style.cssText =
       "position:fixed;inset:0;z-index:400;display:flex;align-items:center;justify-content:center;" +
       "background:#15102a;font:14px/1.5 system-ui;color:#cdd6f4";
+    // No free grant — you must deposit to play. Domination needs >= the buy-in.
+    const minToEnter = gameMode === "domination" ? 5000 : 6400;
     const stakeLine = gameMode === "domination"
       ? `<div style="color:#f9e2af;margin-bottom:8px">⚔ Domination buy-in: <b>5,000 sats</b> — winner takes the pot.</div>`
-      : `<div style="color:#a6adc8;margin-bottom:8px">Open world — fund your wallet to spawn armies and buy pieces.</div>`;
+      : `<div style="color:#a6adc8;margin-bottom:8px">Open world — deposit to spawn your army (6,400 sats) and buy pieces.</div>`;
     ov.innerHTML =
       `<div style="background:linear-gradient(180deg,#171a28,#11131d);border:1px solid #2a3350;border-radius:16px;` +
       `padding:24px;max-width:340px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.55)">` +
       `<div style="font-weight:700;font-size:18px;margin-bottom:6px">⚡ Fund your entry</div>${stakeLine}` +
-      `<div id="ef-amt" style="margin:6px 0">Top up <b id="ef-val">5,000</b> sats</div>` +
+      `<div style="margin:6px 0;color:#a6adc8">Funded: <b id="ef-bal" style="color:#94e2d5">0</b> sats</div>` +
       `<img id="ef-qr" alt="" style="display:none;width:200px;height:200px;margin:8px auto;background:#fff;border-radius:10px"/>` +
       `<div id="ef-status" style="color:#a6adc8;min-height:18px;margin:6px 0"></div>` +
       `<div style="display:flex;gap:8px;justify-content:center;margin-top:10px">` +
-      `<button id="ef-pay" style="padding:9px 16px;background:#94e2d5;color:#11151f;border:0;border-radius:8px;font-weight:700;cursor:pointer">Top up ⚡</button>` +
-      `<button id="ef-enter" style="padding:9px 18px;background:#f9e2af;color:#11151f;border:0;border-radius:8px;font-weight:700;cursor:pointer">Enter the world</button>` +
+      `<button id="ef-pay" style="padding:9px 16px;background:#94e2d5;color:#11151f;border:0;border-radius:8px;font-weight:700;cursor:pointer">Deposit 5,000 ⚡</button>` +
+      `<button id="ef-enter" disabled style="padding:9px 18px;background:#3a3f52;color:#888;border:0;border-radius:8px;font-weight:700;cursor:not-allowed">Enter the world</button>` +
       `</div>`;
     document.body.appendChild(ov);
     const qr = ov.querySelector("#ef-qr") as HTMLImageElement;
     const status = ov.querySelector("#ef-status")!;
+    const balEl = ov.querySelector("#ef-bal")!;
+    const enterBtn = ov.querySelector("#ef-enter") as HTMLButtonElement;
+    let funded = 0;
+    const updateEnter = () => {
+      const ok = funded >= minToEnter;
+      enterBtn.disabled = !ok;
+      enterBtn.style.cursor = ok ? "pointer" : "not-allowed";
+      enterBtn.style.background = ok ? "#f9e2af" : "#3a3f52";
+      enterBtn.style.color = ok ? "#11151f" : "#888";
+    };
     conn.onInvoice = (inv) => {
       QRCode.toDataURL(inv.bolt11.toUpperCase(), { margin: 1, width: 200 })
         .then((u) => { qr.src = u; qr.style.display = "block"; }).catch(() => {});
       status.textContent = `Scan to pay ${formatSats(inv.sats)} sats…`;
     };
-    conn.onDepositCredited = (d) => { status.textContent = `Funded ${formatSats(d.sats)} sats ✓`; qr.style.display = "none"; };
+    conn.onDepositCredited = (d) => {
+      funded = d.balance;
+      balEl.textContent = formatSats(funded);
+      status.textContent = `Funded ${formatSats(d.sats)} sats ✓`;
+      qr.style.display = "none";
+      updateEnter();
+    };
     (ov.querySelector("#ef-pay") as HTMLButtonElement).onclick = () => { conn.requestDeposit(5000); };
-    (ov.querySelector("#ef-enter") as HTMLButtonElement).onclick = () => { ov.remove(); resolve(); };
+    enterBtn.onclick = () => { if (!enterBtn.disabled) { ov.remove(); resolve(); } };
   });
 }
 conn.onStatus = (t) => {

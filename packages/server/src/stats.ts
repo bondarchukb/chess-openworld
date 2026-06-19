@@ -22,8 +22,8 @@ export interface PlayerStats {
 
 export const STARTING_ELO = 1000;
 export const ELO_K = 32;
-/** Starter grant: enough to spawn ~4 armies before scoring any kills. */
-export const STARTING_SATS = ARMY_SATS_COST * 4; // ~26,000 with default piece values
+/** No free grant — players must deposit real (mock) sats to play / bet. */
+export const STARTING_SATS = 0;
 
 export function newStats(): PlayerStats {
   return { elo: STARTING_ELO, wins: 0, losses: 0, kills: 0, deaths: 0, sats: STARTING_SATS };
