@@ -49,6 +49,10 @@ export const ARMY_SATS_COST =
   PIECE_SATS.queen! +
   PIECE_SATS.king!;
 
+/** Fixed, equal buy-in every domination player antes into the match pot on
+ * entry / each round. Winner takes the whole pot — same bet for everyone. */
+export const ENTRY_STAKE = 5000;
+
 export type PieceId = string;
 export type ArmyId = string;
 

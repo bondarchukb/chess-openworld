@@ -22,6 +22,7 @@ import {
   type Piece,
   type PieceId,
   type ServerMessage,
+  ENTRY_STAKE,
 } from "@chess-openworld/protocol";
 import { randomUUID } from "node:crypto";
 import { World } from "./world.js";
@@ -61,6 +62,8 @@ export class GameServer {
   private depositPolls = new Map<string, ReturnType<typeof setInterval>>();
   /** offerId -> pending buy offer. */
   private offers = new Map<string, { buyerArmyId: ArmyId; buyerAccount: string; sellerArmyId: ArmyId; pieceId: PieceId; price: number; timer: ReturnType<typeof setTimeout> }>();
+  /** Accumulated equal-stake pot for the live domination match. */
+  private dominationPot = 0;
   private http: HttpServer;
   private wss: WebSocketServer;
   private sessions = new Set<Session>();
@@ -143,6 +146,15 @@ export class GameServer {
     return sess?.account ?? this.world.getArmy(armyId)?.name ?? "anon";
   }
 
+  /** Deduct the fixed domination buy-in from an account into the match pot.
+   * Everyone antes the same amount — the bet is equal regardless of balance. */
+  private anteDomination(account: string): void {
+    const bal = this.stats.get(account);
+    const take = Math.min(ENTRY_STAKE, bal.sats);
+    bal.sats -= take;
+    this.dominationPot += take;
+  }
+
   private broadcastRoster(): void {
     const armies = [...this.world.armies.values()].map((a) => {
       const s = this.stats.get(this.accountOfArmy(a.id));
@@ -175,13 +187,9 @@ export class GameServer {
     const contenders = participants.filter((a) => !a.dead && this.world.armyHasPieceInArena(a.id));
     if (contenders.length !== 1) return;
     const winner = contenders[0]!;
-    let jackpot = 0;
-    for (const loser of participants) {
-      if (loser.id === winner.id) continue;
-      const s = this.stats.get(this.accountOfArmy(loser.id));
-      jackpot += s.sats;
-      s.sats = 0;
-    }
+    // Winner takes the equal-stake pot (everyone anted the same on entry).
+    const jackpot = this.dominationPot;
+    this.dominationPot = 0;
     this.stats.get(this.accountOfArmy(winner.id)).sats += jackpot;
     const msg: ServerMessage = {
       t: "dominationWin",
@@ -191,17 +199,21 @@ export class GameServer {
     };
     for (const s of this.sessions) send(s.socket, msg);
     // Reset arena: cancel any pending death-respawn (else a wiped army respawns
-    // twice), then respawn every participant so the next match starts fresh.
+    // twice), re-ante every participant for the next round, then respawn fresh.
     for (const a of participants) {
       const timer = this.respawnTimers.get(a.id);
       if (timer) {
         clearTimeout(timer);
         this.respawnTimers.delete(a.id);
       }
-      this.stats.chargeSpawn(this.accountOfArmy(a.id));
+      this.anteDomination(this.accountOfArmy(a.id));
       this.world.respawnArmy(a);
       const sess = [...this.sessions].find((s) => s.armyId === a.id);
       if (sess) sess.focus = { x: a.spawnX, y: a.spawnY };
+    }
+    // Push updated balances to everyone (pot won + fresh antes).
+    for (const s of this.sessions) {
+      if (s.armyId) send(s.socket, { t: "balance", sats: this.stats.get(s.account).sats });
     }
     void this.persistStats();
   }
@@ -215,9 +227,10 @@ export class GameServer {
   ): Session {
     // Stable money/stats key: the client's accountId, or the name as fallback.
     const account = accountId || name || "anon";
-    // Charge spawn cost up front. Broke players still get an army (partial
-    // charge) — losing pieces will be the real penalty.
-    this.stats.chargeSpawn(account);
+    // Domination is a staked match: ante the fixed equal buy-in into the pot.
+    // Open mode just charges the army spawn cost.
+    if (gameMode === "domination") this.anteDomination(account);
+    else this.stats.chargeSpawn(account);
     const army = this.world.spawnArmy(name || "anon", spawnMode, gameMode);
     const session: Session = {
       armyId: army.id,
@@ -564,8 +577,9 @@ export class GameServer {
     this.respawnTimers.delete(armyId);
     const army = this.world.getArmy(armyId);
     if (!army) return;
-    // Charge the spawn cost again for the new army.
-    this.stats.chargeSpawn(this.accountOfArmy(armyId));
+    // Re-pay to re-enter: domination antes back into the pot, open mode pays spawn.
+    if (army.gameMode === "domination") this.anteDomination(this.accountOfArmy(armyId));
+    else this.stats.chargeSpawn(this.accountOfArmy(armyId));
     this.world.respawnArmy(army);
     const victimSession = [...this.sessions].find((s) => s.armyId === armyId);
     if (victimSession) {
