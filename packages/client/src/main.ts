@@ -70,11 +70,14 @@ const asSpectator = spawnMode === "spectator";
 const gameMode: "open" | "domination" = spawnMode === "domination" ? "domination" : "open";
 const actualSpawnMode: "classical" | "blob" =
   spawnMode === "blob" ? "blob" : "classical";
-// Stable per-browser account id so your sats balance persists across sessions.
-let accountId = localStorage.getItem("chess-mmo:accountId") ?? "";
+// Per-tab account id (sessionStorage, NOT localStorage) so two tabs in one
+// browser are two distinct wallets — otherwise capturing your "opponent" in a
+// second tab would move sats from your own account to itself. Persists across
+// reloads within the tab.
+let accountId = sessionStorage.getItem("chess-mmo:accountId") ?? "";
 if (!accountId) {
   accountId = (crypto.randomUUID?.() ?? `acc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  localStorage.setItem("chess-mmo:accountId", accountId);
+  sessionStorage.setItem("chess-mmo:accountId", accountId);
 }
 const conn = new Connection(wsUrl, name, actualSpawnMode, asSpectator, gameMode, accountId);
 conn.onStatus = (t) => {
