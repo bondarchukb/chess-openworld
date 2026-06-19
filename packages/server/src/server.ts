@@ -146,13 +146,17 @@ export class GameServer {
    * match is over. Award them the sum of all their opponents' current sats
    * (winner takes all the altar stakes). */
   private checkDominationWinner(): void {
-    const dominationArmies = [...this.world.armies.values()].filter((a) => a.gameMode === "domination" && !a.dead);
-    if (dominationArmies.length < 2) return;
-    const present = dominationArmies.filter((a) => this.world.armyHasPieceInArena(a.id));
-    if (present.length !== 1) return;
-    const winner = present[0]!;
+    // Gate on total participants — a just-eliminated army is `dead` but kept as
+    // a participant shell (wipeArmy), so it must still count toward the match.
+    const participants = [...this.world.armies.values()].filter((a) => a.gameMode === "domination");
+    if (participants.length < 2) return;
+    // A contender is alive AND still holding the arena. Win when exactly one
+    // remains — covers both "opponents killed" and "opponents pushed out".
+    const contenders = participants.filter((a) => !a.dead && this.world.armyHasPieceInArena(a.id));
+    if (contenders.length !== 1) return;
+    const winner = contenders[0]!;
     let jackpot = 0;
-    for (const loser of dominationArmies) {
+    for (const loser of participants) {
       if (loser.id === winner.id) continue;
       const s = this.stats.get(loser.name);
       jackpot += s.sats;
@@ -166,8 +170,14 @@ export class GameServer {
       satsJackpot: jackpot,
     };
     for (const s of this.sessions) send(s.socket, msg);
-    // Reset arena: respawn every domination army so the next match starts fresh.
-    for (const a of dominationArmies) {
+    // Reset arena: cancel any pending death-respawn (else a wiped army respawns
+    // twice), then respawn every participant so the next match starts fresh.
+    for (const a of participants) {
+      const timer = this.respawnTimers.get(a.id);
+      if (timer) {
+        clearTimeout(timer);
+        this.respawnTimers.delete(a.id);
+      }
       this.stats.chargeSpawn(a.name);
       this.world.respawnArmy(a);
       const sess = [...this.sessions].find((s) => s.armyId === a.id);
