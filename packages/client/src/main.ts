@@ -175,6 +175,52 @@ conn.onDominationWin = (info) => {
   showDominationBanner(info.winnerName, info.satsJackpot);
 };
 
+// ---- styled modal (replaces browser prompt/confirm) ------------------------
+
+interface ModalField { key: string; label: string; value?: string; type?: string; placeholder?: string }
+function uiPrompt(opts: { title: string; fields: ModalField[]; okLabel?: string }): Promise<Record<string, string> | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(4,6,12,.6);backdrop-filter:blur(2px);" +
+      "display:flex;align-items:center;justify-content:center;z-index:300;font:14px/1.5 system-ui";
+    const card = document.createElement("div");
+    card.style.cssText =
+      "min-width:300px;max-width:90vw;background:linear-gradient(180deg,#171a28,#11131d);" +
+      "border:1px solid #2a3350;border-radius:14px;padding:20px;color:#cdd6f4;box-shadow:0 12px 40px rgba(0,0,0,.55)";
+    const inputs: Record<string, HTMLInputElement> = {};
+    const rows = opts.fields.map((f) => {
+      const id = `m-${f.key}`;
+      return `<label style="display:block;margin:10px 0 4px;color:#a6adc8">${f.label}</label>` +
+        `<input id="${id}" type="${f.type ?? "text"}" value="${f.value ?? ""}" placeholder="${f.placeholder ?? ""}" ` +
+        `style="width:100%;padding:9px 11px;background:#0b0e16;color:#94e2d5;border:1px solid #2a3350;border-radius:8px;box-sizing:border-box;font-size:14px">`;
+    }).join("");
+    card.innerHTML =
+      `<div style="font-weight:700;font-size:16px;margin-bottom:6px">${opts.title}</div>${rows}` +
+      `<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">` +
+      `<button id="m-cancel" style="padding:8px 16px;background:#222838;color:#cdd6f4;border:0;border-radius:8px;cursor:pointer">Cancel</button>` +
+      `<button id="m-ok" style="padding:8px 18px;background:#f9e2af;color:#11151f;border:0;border-radius:8px;font-weight:700;cursor:pointer">${opts.okLabel ?? "Confirm"}</button></div>`;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    for (const f of opts.fields) inputs[f.key] = document.getElementById(`m-${f.key}`) as HTMLInputElement;
+    const first = opts.fields[0] && inputs[opts.fields[0].key];
+    if (first) { first.focus(); first.select(); }
+    const done = (ok: boolean) => {
+      overlay.remove();
+      window.removeEventListener("keydown", onKey);
+      resolve(ok ? Object.fromEntries(opts.fields.map((f) => [f.key, inputs[f.key]!.value])) : null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter") done(true);
+      else if (e.key === "Escape") done(false);
+    };
+    window.addEventListener("keydown", onKey);
+    (document.getElementById("m-ok") as HTMLButtonElement).onclick = () => done(true);
+    (document.getElementById("m-cancel") as HTMLButtonElement).onclick = () => done(false);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) done(false); });
+  });
+}
+
 // ---- wallet panel (Lightning deposit / withdraw) ---------------------------
 
 const wallet = document.createElement("div");
@@ -205,20 +251,26 @@ function refreshWallet(): void {
   wBal.textContent = conn.stats ? formatSats(conn.stats.sats) : "—";
 }
 
-document.getElementById("w-topup")!.addEventListener("click", () => {
-  const v = prompt("Top up how many sats?", "1000");
-  const sats = Number(v);
+document.getElementById("w-topup")!.addEventListener("click", async () => {
+  const r = await uiPrompt({ title: "⚡ Top Up", okLabel: "Get invoice", fields: [{ key: "sats", label: "Amount (sats)", value: "1000", type: "number" }] });
+  if (!r) return;
+  const sats = Number(r.sats);
   if (!Number.isFinite(sats) || sats < 1) return;
   conn.requestDeposit(sats);
   wMsg.textContent = "Creating invoice…";
 });
-document.getElementById("w-cashout")!.addEventListener("click", () => {
-  const addr = prompt("Cash out to Lightning address (name@domain):", "");
-  if (!addr) return;
-  const v = prompt("How many sats?", "500");
-  const sats = Number(v);
+document.getElementById("w-cashout")!.addEventListener("click", async () => {
+  const r = await uiPrompt({
+    title: "⚡ Cash Out", okLabel: "Send",
+    fields: [
+      { key: "addr", label: "Lightning address", placeholder: "name@domain" },
+      { key: "sats", label: "Amount (sats)", value: "500", type: "number" },
+    ],
+  });
+  if (!r || !r.addr) return;
+  const sats = Number(r.sats);
   if (!Number.isFinite(sats) || sats < 1) return;
-  conn.requestWithdraw(addr, sats);
+  conn.requestWithdraw(r.addr, sats);
   wMsg.textContent = "Sending payout…";
 });
 
@@ -341,7 +393,7 @@ window.addEventListener("pointermove", (e) => {
 window.addEventListener("pointerup", (e) => {
   dragging = false;
   app.canvas.style.cursor = "grab";
-  if (dragMoved < 6) handleClick(e.clientX, e.clientY);
+  if (dragMoved < 6) void handleClick(e.clientX, e.clientY);
 });
 
 app.canvas.addEventListener(
@@ -363,7 +415,7 @@ function pickTile(clientX: number, clientY: number): { x: number; y: number } {
   return { x: Math.round(wx), y: Math.round(wy) };
 }
 
-function handleClick(clientX: number, clientY: number): void {
+async function handleClick(clientX: number, clientY: number): Promise<void> {
   if (!conn.self) return;
   const { x, y } = pickTile(clientX, clientY);
   const clickedPiece = findPieceAt(x, y);
@@ -389,11 +441,16 @@ function handleClick(clientX: number, clientY: number): void {
   } else if (clickedPiece && clickedPiece.type !== "king") {
     // Enemy piece — make a buy offer; the owner must accept.
     const suggested = PIECE_SATS[clickedPiece.type] ?? 100;
-    const v = prompt(`Offer how many sats for enemy ${clickedPiece.type}? (owner must accept)`, String(suggested));
-    if (v === null) return;
-    const price = Number(v);
+    const pieceId = clickedPiece.id;
+    const r = await uiPrompt({
+      title: `Buy enemy ${clickedPiece.type}`,
+      okLabel: "Send offer",
+      fields: [{ key: "price", label: "Offer (sats) — owner must accept", value: String(suggested), type: "number" }],
+    });
+    if (!r) return;
+    const price = Number(r.price);
     if (!Number.isFinite(price) || price < 0) return;
-    conn.buyOffer(clickedPiece.id, price);
+    conn.buyOffer(pieceId, price);
     wMsg.textContent = `Offer sent (${formatSats(price)} sats) — waiting for owner…`;
   }
 }
