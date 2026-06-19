@@ -266,6 +266,13 @@ function refreshWallet(): void {
   wBal.textContent = conn.stats ? formatSats(conn.stats.sats) : "—";
 }
 
+// In a staked domination match you bet on entry — no funding mid-match.
+if (gameMode === "domination") {
+  (document.getElementById("w-topup") as HTMLButtonElement).style.display = "none";
+  (document.getElementById("w-cashout") as HTMLButtonElement).style.display = "none";
+  wMsg.textContent = "Staked match — 5,000 sats bet placed on entry.";
+}
+
 document.getElementById("w-topup")!.addEventListener("click", async () => {
   const r = await uiPrompt({ title: "⚡ Top Up", okLabel: "Get invoice", fields: [{ key: "sats", label: "Amount (sats)", value: "1000", type: "number" }] });
   if (!r) return;
