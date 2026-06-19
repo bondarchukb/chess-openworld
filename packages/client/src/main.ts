@@ -239,6 +239,14 @@ conn.onWithdrawResult = (r) => {
   refreshWallet();
 };
 conn.onBalance = () => refreshWallet();
+conn.onOfferReceived = (o) => {
+  const accept = confirm(`${o.fromName} offers ${formatSats(o.price)} sats for your ${o.pieceType}. Sell? It defects to them.`);
+  conn.respondOffer(o.offerId, accept);
+};
+conn.onOfferResolved = (r) => {
+  wMsg.textContent = r.ok ? "Offer accepted — piece is yours ✓" : `Offer ${r.reason ?? "declined"}`;
+  refreshWallet();
+};
 
 // ---- keyboard --------------------------------------------------------------
 
@@ -362,11 +370,14 @@ function handleClick(clientX: number, clientY: number): void {
   if (clickedPiece && clickedPiece.owner === conn.self.armyId) {
     selectAndComputeMoves(clickedPiece);
   } else if (clickedPiece && clickedPiece.type !== "king") {
-    // Enemy piece — offer to buy (defect) it over Lightning sats.
-    const price = PIECE_SATS[clickedPiece.type] ?? 0;
-    if (confirm(`Buy enemy ${clickedPiece.type} for ${formatSats(price)} sats? It defects to your army.`)) {
-      conn.buyOpponentPiece(clickedPiece.id);
-    }
+    // Enemy piece — make a buy offer; the owner must accept.
+    const suggested = PIECE_SATS[clickedPiece.type] ?? 100;
+    const v = prompt(`Offer how many sats for enemy ${clickedPiece.type}? (owner must accept)`, String(suggested));
+    if (v === null) return;
+    const price = Number(v);
+    if (!Number.isFinite(price) || price < 0) return;
+    conn.buyOffer(clickedPiece.id, price);
+    wMsg.textContent = `Offer sent (${formatSats(price)} sats) — waiting for owner…`;
   }
 }
 

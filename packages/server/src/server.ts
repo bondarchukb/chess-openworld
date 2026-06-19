@@ -22,7 +22,6 @@ import {
   type Piece,
   type PieceId,
   type ServerMessage,
-  PIECE_SATS,
 } from "@chess-openworld/protocol";
 import { randomUUID } from "node:crypto";
 import { World } from "./world.js";
@@ -56,6 +55,8 @@ export class GameServer {
   readonly ledger = new Ledger(this.stats);
   /** invoiceId -> pending deposit poll timer. */
   private depositPolls = new Map<string, ReturnType<typeof setInterval>>();
+  /** offerId -> pending buy offer. */
+  private offers = new Map<string, { buyerArmyId: ArmyId; buyerName: string; sellerArmyId: ArmyId; pieceId: PieceId; price: number; timer: ReturnType<typeof setTimeout> }>();
   private http: HttpServer;
   private wss: WebSocketServer;
   private sessions = new Set<Session>();
@@ -297,6 +298,10 @@ export class GameServer {
           if (victimArmy) {
             this.stats.transferCapture(session.name, victimArmy.name, res.captured.type);
             rosterDirty = true;
+            // Push fresh balances so both HUDs reflect the sat transfer.
+            send(session.socket, { t: "balance", sats: this.stats.get(session.name).sats });
+            const victimSession = [...this.sessions].find((s) => s.armyId === victimArmy.id);
+            if (victimSession) send(victimSession.socket, { t: "balance", sats: this.stats.get(victimArmy.name).sats });
             void this.persistStats();
           }
         }
@@ -333,8 +338,11 @@ export class GameServer {
       case "withdrawRequest":
         void this.handleWithdraw(session, msg.lnAddress, msg.sats);
         break;
-      case "buyOpponentPiece":
-        this.handleBuyOpponentPiece(session, msg.pieceId);
+      case "buyOffer":
+        this.handleBuyOffer(session, msg.pieceId, msg.price);
+        break;
+      case "offerResponse":
+        this.handleOfferResponse(session, msg.offerId, msg.accept);
         break;
       case "ping":
         send(session.socket, { t: "pong" });
@@ -404,27 +412,62 @@ export class GameServer {
     void this.persistStats();
   }
 
-  private handleBuyOpponentPiece(session: Session, pieceId: PieceId): void {
+  /** Buyer offers `price` sats for an enemy piece. The owner must accept. */
+  private handleBuyOffer(session: Session, pieceId: PieceId, price: number): void {
     if (!session.armyId) return;
+    if (!Number.isFinite(price) || price < 0) return send(session.socket, { t: "offerResolved", ok: false, reason: "invalid price" });
     const piece = this.world.getPiece(pieceId);
-    if (!piece) return send(session.socket, { t: "error", message: "no such piece" });
-    if (piece.owner === session.armyId) return send(session.socket, { t: "error", message: "already yours" });
-    if (piece.type === "king") return send(session.socket, { t: "error", message: "can't buy a king" });
+    if (!piece) return send(session.socket, { t: "offerResolved", ok: false, reason: "no such piece" });
+    if (piece.owner === session.armyId) return send(session.socket, { t: "offerResolved", ok: false, reason: "already yours" });
+    if (piece.type === "king") return send(session.socket, { t: "offerResolved", ok: false, reason: "can't buy a king" });
     const sellerArmy = this.world.getArmy(piece.owner);
-    if (!sellerArmy) return send(session.socket, { t: "error", message: "no owner" });
-    const price = PIECE_SATS[piece.type] ?? 0;
-    const ref = `${pieceId}-${Date.now()}`;
-    if (!this.ledger.transfer(session.name, sellerArmy.name, price, "buyOpponentPiece", ref)) {
-      return send(session.socket, { t: "error", message: "not enough sats" });
+    if (!sellerArmy) return send(session.socket, { t: "offerResolved", ok: false, reason: "no owner" });
+    const sellerSession = [...this.sessions].find((s) => s.armyId === sellerArmy.id);
+    if (!sellerSession) return send(session.socket, { t: "offerResolved", ok: false, reason: "owner not reachable" });
+    if (this.ledger.balanceOf(session.name) < price) return send(session.socket, { t: "offerResolved", ok: false, reason: "not enough sats" });
+
+    const offerId = randomUUID();
+    const timer = setTimeout(() => {
+      if (this.offers.delete(offerId)) send(session.socket, { t: "offerResolved", ok: false, reason: "offer expired" });
+    }, 30_000);
+    this.offers.set(offerId, { buyerArmyId: session.armyId, buyerName: session.name, sellerArmyId: sellerArmy.id, pieceId, price, timer });
+    send(sellerSession.socket, { t: "offerReceived", offerId, pieceId, pieceType: piece.type, price, fromName: session.name });
+  }
+
+  /** Owner accepts/declines a pending offer. On accept, move sats + defect the piece. */
+  private handleOfferResponse(session: Session, offerId: string, accept: boolean): void {
+    const offer = this.offers.get(offerId);
+    if (!offer) return;
+    if (offer.sellerArmyId !== session.armyId) return; // only the owner may respond
+    clearTimeout(offer.timer);
+    this.offers.delete(offerId);
+
+    const buyerSession = [...this.sessions].find((s) => s.armyId === offer.buyerArmyId);
+    if (!accept) {
+      if (buyerSession) send(buyerSession.socket, { t: "offerResolved", ok: false, reason: "declined" });
+      return;
     }
-    if (!this.world.transferPiece(pieceId, session.armyId)) {
-      // unlikely; refund by reversing the transfer
-      this.ledger.transfer(sellerArmy.name, session.name, price, "buyOpponentPiece", `${ref}-rev`);
-      return send(session.socket, { t: "error", message: "transfer failed" });
+    // Re-validate: piece still exists and is still the seller's.
+    const piece = this.world.getPiece(offer.pieceId);
+    if (!piece || piece.owner !== offer.sellerArmyId) {
+      if (buyerSession) send(buyerSession.socket, { t: "offerResolved", ok: false, reason: "piece no longer available" });
+      return;
+    }
+    const ref = `${offerId}`;
+    if (!this.ledger.transfer(offer.buyerName, session.name, offer.price, "buyOpponentPiece", ref)) {
+      if (buyerSession) send(buyerSession.socket, { t: "offerResolved", ok: false, reason: "buyer can't afford it" });
+      return;
+    }
+    if (!this.world.transferPiece(offer.pieceId, offer.buyerArmyId)) {
+      this.ledger.transfer(session.name, offer.buyerName, offer.price, "buyOpponentPiece", `${ref}-rev`);
+      if (buyerSession) send(buyerSession.socket, { t: "offerResolved", ok: false, reason: "transfer failed" });
+      return;
+    }
+    if (buyerSession) {
+      send(buyerSession.socket, { t: "offerResolved", ok: true });
+      send(buyerSession.socket, { t: "balance", sats: this.ledger.balanceOf(offer.buyerName) });
     }
     send(session.socket, { t: "balance", sats: this.ledger.balanceOf(session.name) });
-    const sellerSession = [...this.sessions].find((s) => s.armyId === sellerArmy.id);
-    if (sellerSession) send(sellerSession.socket, { t: "balance", sats: this.ledger.balanceOf(sellerArmy.name) });
     this.resnapshotAll();
     this.broadcastRoster();
     void this.persistStats();

@@ -98,8 +98,10 @@ export type ClientMessage =
   | { t: "depositRequest"; sats: number }
   /** Cash out `sats` to a Lightning address. */
   | { t: "withdrawRequest"; lnAddress: string; sats: number }
-  /** Buy (defect) an enemy piece — pay its sat value to its owner; it joins you. */
-  | { t: "buyOpponentPiece"; pieceId: PieceId }
+  /** Offer to buy (defect) an enemy piece for `price` sats. Owner must accept. */
+  | { t: "buyOffer"; pieceId: PieceId; price: number }
+  /** Owner's accept/decline of an incoming buy offer. */
+  | { t: "offerResponse"; offerId: string; accept: boolean }
   | { t: "ping" };
 
 // ---- Server -> Client -------------------------------------------------------
@@ -183,6 +185,10 @@ export type ServerMessage =
   | { t: "withdrawResult"; ok: boolean; sats: number; balance: number; reason?: string }
   /** Generic balance update (after a purchase, etc.). */
   | { t: "balance"; sats: number }
+  /** Sent to a piece's owner when someone offers to buy it. */
+  | { t: "offerReceived"; offerId: string; pieceId: PieceId; pieceType: string; price: number; fromName: string }
+  /** Sent to the offer maker once the owner responds or it times out. */
+  | { t: "offerResolved"; ok: boolean; reason?: string }
   | { t: "error"; message: string }
   | { t: "pong" };
 

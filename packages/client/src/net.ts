@@ -56,6 +56,8 @@ export class Connection {
   onDepositCredited: (info: { sats: number; balance: number }) => void = () => {};
   onWithdrawResult: (info: { ok: boolean; sats: number; balance: number; reason?: string }) => void = () => {};
   onBalance: (sats: number) => void = () => {};
+  onOfferReceived: (info: { offerId: string; pieceId: PieceId; pieceType: string; price: number; fromName: string }) => void = () => {};
+  onOfferResolved: (info: { ok: boolean; reason?: string }) => void = () => {};
 
   constructor(
     url: string,
@@ -169,6 +171,12 @@ export class Connection {
         if (this.stats) this.stats.sats = msg.sats;
         this.onBalance(msg.sats);
         break;
+      case "offerReceived":
+        this.onOfferReceived({ offerId: msg.offerId, pieceId: msg.pieceId, pieceType: msg.pieceType, price: msg.price, fromName: msg.fromName });
+        break;
+      case "offerResolved":
+        this.onOfferResolved({ ok: msg.ok, reason: msg.reason });
+        break;
       case "error":
         this.onStatus(`server: ${msg.message}`);
         break;
@@ -185,7 +193,10 @@ export class Connection {
   requestWithdraw(lnAddress: string, sats: number): void {
     this.send({ t: "withdrawRequest", lnAddress, sats });
   }
-  buyOpponentPiece(pieceId: PieceId): void {
-    this.send({ t: "buyOpponentPiece", pieceId });
+  buyOffer(pieceId: PieceId, price: number): void {
+    this.send({ t: "buyOffer", pieceId, price });
+  }
+  respondOffer(offerId: string, accept: boolean): void {
+    this.send({ t: "offerResponse", offerId, accept });
   }
 }
