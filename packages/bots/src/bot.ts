@@ -21,6 +21,7 @@ import {
   WORLD,
   type ArmyId,
   type ClientMessage,
+  type GameMode,
   type Piece,
   type PieceId,
   type ServerMessage,
@@ -35,6 +36,8 @@ export interface BotOptions {
   url: string;
   name: string;
   spawnMode?: SpawnMode;
+  /** Game mode to join. Default "open". */
+  gameMode?: GameMode;
   /** ms between policy ticks. Default 800. */
   tickIntervalMs?: number;
   /** Log lines? Default true. */
@@ -56,7 +59,7 @@ export class Bot {
     this.socket = ws;
     ws.on("open", () => {
       this.log(`connected`);
-      this.send({ t: "join", name: opts.name, spawnMode: opts.spawnMode ?? "classical" });
+      this.send({ t: "join", name: opts.name, spawnMode: opts.spawnMode ?? "classical", gameMode: opts.gameMode ?? "open" });
     });
     ws.on("message", (raw) => this.handle(JSON.parse(raw.toString()) as ServerMessage));
     ws.on("close", () => {
