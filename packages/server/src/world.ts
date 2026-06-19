@@ -127,6 +127,22 @@ export class World {
     return army;
   }
 
+  /** Defect a piece to another army (bought over Lightning). Reassigns owner +
+   * color; keeps position. Kings can't defect. Returns false if not allowed. */
+  transferPiece(pieceId: PieceId, toArmyId: ArmyId): boolean {
+    const piece = this.pieces.get(pieceId);
+    if (!piece) return false;
+    if (piece.type === "king") return false;
+    const from = this.armies.get(piece.owner);
+    const to = this.armies.get(toArmyId);
+    if (!to || to.dead || piece.owner === toArmyId) return false;
+    from?.pieces.delete(pieceId);
+    to.pieces.add(pieceId);
+    piece.owner = toArmyId;
+    piece.color = to.color;
+    return true;
+  }
+
   removeArmy(armyId: ArmyId): void {
     const army = this.armies.get(armyId);
     if (!army) return;

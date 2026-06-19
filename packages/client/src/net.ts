@@ -52,6 +52,10 @@ export class Connection {
   onDead: (info: DeadInfo) => void = () => {};
   onRespawned: () => void = () => {};
   onDominationWin: (info: { winnerName: string; winnerArmyId: ArmyId; satsJackpot: number }) => void = () => {};
+  onInvoice: (info: { invoiceId: string; bolt11: string; sats: number }) => void = () => {};
+  onDepositCredited: (info: { sats: number; balance: number }) => void = () => {};
+  onWithdrawResult: (info: { ok: boolean; sats: number; balance: number; reason?: string }) => void = () => {};
+  onBalance: (sats: number) => void = () => {};
 
   constructor(
     url: string,
@@ -150,6 +154,21 @@ export class Connection {
           satsJackpot: msg.satsJackpot,
         });
         break;
+      case "invoice":
+        this.onInvoice({ invoiceId: msg.invoiceId, bolt11: msg.bolt11, sats: msg.sats });
+        break;
+      case "depositCredited":
+        if (this.stats) this.stats.sats = msg.balance;
+        this.onDepositCredited({ sats: msg.sats, balance: msg.balance });
+        break;
+      case "withdrawResult":
+        if (this.stats) this.stats.sats = msg.balance;
+        this.onWithdrawResult({ ok: msg.ok, sats: msg.sats, balance: msg.balance, reason: msg.reason });
+        break;
+      case "balance":
+        if (this.stats) this.stats.sats = msg.sats;
+        this.onBalance(msg.sats);
+        break;
       case "error":
         this.onStatus(`server: ${msg.message}`);
         break;
@@ -158,5 +177,15 @@ export class Connection {
 
   send(msg: ClientMessage): void {
     if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(msg));
+  }
+
+  requestDeposit(sats: number): void {
+    this.send({ t: "depositRequest", sats });
+  }
+  requestWithdraw(lnAddress: string, sats: number): void {
+    this.send({ t: "withdrawRequest", lnAddress, sats });
+  }
+  buyOpponentPiece(pieceId: PieceId): void {
+    this.send({ t: "buyOpponentPiece", pieceId });
   }
 }

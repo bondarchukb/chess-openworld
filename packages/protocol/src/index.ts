@@ -94,6 +94,12 @@ export type ClientMessage =
   | { t: "reorient"; pieceId: PieceId; dir: [number, number] }
   /** Camera position — server streams interest around this point. */
   | { t: "focus"; x: number; y: number }
+  /** Top up: ask the server to mint a Lightning invoice for `sats`. */
+  | { t: "depositRequest"; sats: number }
+  /** Cash out `sats` to a Lightning address. */
+  | { t: "withdrawRequest"; lnAddress: string; sats: number }
+  /** Buy (defect) an enemy piece — pay its sat value to its owner; it joins you. */
+  | { t: "buyOpponentPiece"; pieceId: PieceId }
   | { t: "ping" };
 
 // ---- Server -> Client -------------------------------------------------------
@@ -169,6 +175,14 @@ export type ServerMessage =
     }
   /** Domination match concluded with a single survivor. */
   | { t: "dominationWin"; winnerName: string; winnerArmyId: ArmyId; satsJackpot: number }
+  /** A Lightning invoice to pay (deposit). Scan the bolt11 / QR. */
+  | { t: "invoice"; invoiceId: string; bolt11: string; sats: number }
+  /** A deposit settled — balance updated. */
+  | { t: "depositCredited"; sats: number; balance: number }
+  /** Result of a withdraw request. */
+  | { t: "withdrawResult"; ok: boolean; sats: number; balance: number; reason?: string }
+  /** Generic balance update (after a purchase, etc.). */
+  | { t: "balance"; sats: number }
   | { t: "error"; message: string }
   | { t: "pong" };
 

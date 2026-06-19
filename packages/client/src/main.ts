@@ -13,7 +13,7 @@
 
 import { Application, Assets, Container, Graphics, Sprite, Text, Texture } from "pixi.js";
 import { PieceRegistry, STANDARD_PIECES, legalMovesPlaneFiltered, type Occupant } from "@chess-openworld/engine";
-import { ARENA, WORLD } from "@chess-openworld/protocol";
+import { ARENA, WORLD, PIECE_SATS } from "@chess-openworld/protocol";
 import type { Piece, PieceId, SelfInfo } from "@chess-openworld/protocol";
 import { Connection } from "./net.js";
 import { CELL, TILE_DEFS, tileColor, tileTypeAt, worldToScreen } from "./iso.js";
@@ -151,6 +151,7 @@ let legalTargets: Set<string> = new Set();
 conn.onWelcome = (you: SelfInfo) => {
   camera.cx = you.spawnX;
   camera.cy = you.spawnY;
+  refreshWallet();
 };
 conn.onDead = (info) => {
   selectedPiece = null;
@@ -173,6 +174,71 @@ conn.onRespawned = () => {
 conn.onDominationWin = (info) => {
   showDominationBanner(info.winnerName, info.satsJackpot);
 };
+
+// ---- wallet panel (Lightning deposit / withdraw) ---------------------------
+
+const wallet = document.createElement("div");
+wallet.id = "wallet";
+wallet.style.cssText =
+  "position:fixed;right:12px;bottom:12px;width:260px;background:rgba(12,14,22,.92);" +
+  "border:1px solid #2a3350;border-radius:10px;padding:12px;color:#cdd6f4;font:12px/1.4 system-ui;z-index:50;";
+wallet.innerHTML =
+  `<div style="font-weight:700;margin-bottom:6px">⚡ Wallet</div>` +
+  `<div>Balance: <b id="w-bal">—</b> sats</div>` +
+  `<div style="display:flex;gap:6px;margin-top:8px">` +
+  `<button id="w-topup" style="flex:1">Top Up</button>` +
+  `<button id="w-cashout" style="flex:1">Cash Out</button></div>` +
+  `<div id="w-invoice" style="margin-top:8px;display:none">` +
+  `<div id="w-inv-status" style="color:#f9e2af">Invoice — pay to deposit:</div>` +
+  `<textarea id="w-inv-text" readonly style="width:100%;height:54px;margin-top:4px;font-size:10px;` +
+  `background:#0b0e16;color:#94e2d5;border:1px solid #2a3350;border-radius:6px"></textarea></div>` +
+  `<div id="w-msg" style="margin-top:6px;color:#a6adc8"></div>`;
+document.body.appendChild(wallet);
+
+const wBal = document.getElementById("w-bal")!;
+const wInvoice = document.getElementById("w-invoice") as HTMLDivElement;
+const wInvText = document.getElementById("w-inv-text") as HTMLTextAreaElement;
+const wInvStatus = document.getElementById("w-inv-status")!;
+const wMsg = document.getElementById("w-msg")!;
+
+function refreshWallet(): void {
+  wBal.textContent = conn.stats ? formatSats(conn.stats.sats) : "—";
+}
+
+document.getElementById("w-topup")!.addEventListener("click", () => {
+  const v = prompt("Top up how many sats?", "1000");
+  const sats = Number(v);
+  if (!Number.isFinite(sats) || sats < 1) return;
+  conn.requestDeposit(sats);
+  wMsg.textContent = "Creating invoice…";
+});
+document.getElementById("w-cashout")!.addEventListener("click", () => {
+  const addr = prompt("Cash out to Lightning address (name@domain):", "");
+  if (!addr) return;
+  const v = prompt("How many sats?", "500");
+  const sats = Number(v);
+  if (!Number.isFinite(sats) || sats < 1) return;
+  conn.requestWithdraw(addr, sats);
+  wMsg.textContent = "Sending payout…";
+});
+
+conn.onInvoice = (inv) => {
+  wInvoice.style.display = "block";
+  wInvStatus.textContent = `Pay ${formatSats(inv.sats)} sats to deposit:`;
+  wInvText.value = inv.bolt11;
+  wInvText.select();
+  wMsg.textContent = "Waiting for payment…";
+};
+conn.onDepositCredited = (d) => {
+  wInvoice.style.display = "none";
+  wMsg.textContent = `Deposited ${formatSats(d.sats)} sats ✓`;
+  refreshWallet();
+};
+conn.onWithdrawResult = (r) => {
+  wMsg.textContent = r.ok ? `Cashed out ${formatSats(r.sats)} sats ✓` : `Cash out failed: ${r.reason ?? "?"}`;
+  refreshWallet();
+};
+conn.onBalance = () => refreshWallet();
 
 // ---- keyboard --------------------------------------------------------------
 
@@ -295,6 +361,12 @@ function handleClick(clientX: number, clientY: number): void {
   }
   if (clickedPiece && clickedPiece.owner === conn.self.armyId) {
     selectAndComputeMoves(clickedPiece);
+  } else if (clickedPiece && clickedPiece.type !== "king") {
+    // Enemy piece — offer to buy (defect) it over Lightning sats.
+    const price = PIECE_SATS[clickedPiece.type] ?? 0;
+    if (confirm(`Buy enemy ${clickedPiece.type} for ${formatSats(price)} sats? It defects to your army.`)) {
+      conn.buyOpponentPiece(clickedPiece.id);
+    }
   }
 }
 

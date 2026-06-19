@@ -22,9 +22,13 @@ import {
   type Piece,
   type PieceId,
   type ServerMessage,
+  PIECE_SATS,
 } from "@chess-openworld/protocol";
+import { randomUUID } from "node:crypto";
 import { World } from "./world.js";
 import { StatsStore, saveStats } from "./stats.js";
+import { Ledger } from "./ledger.js";
+import { providerFromEnv, type LightningProvider } from "./payments.js";
 
 interface Session {
   /** null for spectators. */
@@ -48,6 +52,10 @@ export interface ServerOptions {
 export class GameServer {
   readonly world = new World();
   readonly stats = new StatsStore();
+  readonly provider: LightningProvider = providerFromEnv();
+  readonly ledger = new Ledger(this.stats);
+  /** invoiceId -> pending deposit poll timer. */
+  private depositPolls = new Map<string, ReturnType<typeof setInterval>>();
   private http: HttpServer;
   private wss: WebSocketServer;
   private sessions = new Set<Session>();
@@ -319,9 +327,118 @@ export class GameServer {
         session.focus = { x: msg.x, y: msg.y };
         break;
       }
+      case "depositRequest":
+        void this.handleDeposit(session, msg.sats);
+        break;
+      case "withdrawRequest":
+        void this.handleWithdraw(session, msg.lnAddress, msg.sats);
+        break;
+      case "buyOpponentPiece":
+        this.handleBuyOpponentPiece(session, msg.pieceId);
+        break;
       case "ping":
         send(session.socket, { t: "pong" });
         break;
+    }
+  }
+
+  // ---- Lightning money layer ------------------------------------------------
+
+  private async handleDeposit(session: Session, sats: number): Promise<void> {
+    if (!Number.isFinite(sats) || sats < 1 || sats > 10_000_000) {
+      return send(session.socket, { t: "error", message: "invalid deposit amount" });
+    }
+    const account = session.name;
+    let inv;
+    try {
+      inv = await this.provider.createInvoice(sats, `topup ${account}`);
+    } catch {
+      return send(session.socket, { t: "error", message: "could not create invoice" });
+    }
+    send(session.socket, { t: "invoice", invoiceId: inv.id, bolt11: inv.bolt11, sats });
+    // Mock provider: simulate the user paying shortly so the demo self-drives.
+    if (this.provider.isMock && this.provider.settle) {
+      setTimeout(() => this.provider.settle?.(inv!.id), 2500);
+    }
+    // Poll until the provider confirms settlement, then credit once.
+    const started = Date.now();
+    const poll = setInterval(() => void (async () => {
+      if (Date.now() - started > 10 * 60_000) { this.clearDepositPoll(inv!.id); return; }
+      let status;
+      try { status = await this.provider.getStatus(inv!.id); } catch { return; }
+      if (status !== "paid") return;
+      this.clearDepositPoll(inv!.id);
+      if (this.ledger.deposit(account, sats, inv!.id)) {
+        const balance = this.ledger.balanceOf(account);
+        send(session.socket, { t: "depositCredited", sats, balance });
+      }
+    })(), 1500);
+    this.depositPolls.set(inv.id, poll);
+  }
+
+  private clearDepositPoll(invoiceId: string): void {
+    const t = this.depositPolls.get(invoiceId);
+    if (t) { clearInterval(t); this.depositPolls.delete(invoiceId); }
+  }
+
+  private async handleWithdraw(session: Session, lnAddress: string, sats: number): Promise<void> {
+    const account = session.name;
+    const balance = () => this.ledger.balanceOf(account);
+    if (!lnAddress || !/^[^@\s]+@[^@\s]+$/.test(lnAddress)) {
+      return send(session.socket, { t: "withdrawResult", ok: false, sats, balance: balance(), reason: "invalid Lightning address" });
+    }
+    if (!Number.isFinite(sats) || sats < 1) {
+      return send(session.socket, { t: "withdrawResult", ok: false, sats, balance: balance(), reason: "invalid amount" });
+    }
+    const ref = randomUUID();
+    if (!this.ledger.reserveWithdraw(account, sats, ref)) {
+      return send(session.socket, { t: "withdrawResult", ok: false, sats, balance: balance(), reason: "insufficient funds or pool limit" });
+    }
+    let res;
+    try { res = await this.provider.payAddress(lnAddress, sats); } catch { res = { ok: false, reason: "payout error" }; }
+    if (!res.ok) {
+      this.ledger.refundWithdraw(account, sats, ref);
+      return send(session.socket, { t: "withdrawResult", ok: false, sats, balance: balance(), reason: res.reason ?? "payout failed" });
+    }
+    send(session.socket, { t: "withdrawResult", ok: true, sats, balance: balance() });
+    void this.persistStats();
+  }
+
+  private handleBuyOpponentPiece(session: Session, pieceId: PieceId): void {
+    if (!session.armyId) return;
+    const piece = this.world.getPiece(pieceId);
+    if (!piece) return send(session.socket, { t: "error", message: "no such piece" });
+    if (piece.owner === session.armyId) return send(session.socket, { t: "error", message: "already yours" });
+    if (piece.type === "king") return send(session.socket, { t: "error", message: "can't buy a king" });
+    const sellerArmy = this.world.getArmy(piece.owner);
+    if (!sellerArmy) return send(session.socket, { t: "error", message: "no owner" });
+    const price = PIECE_SATS[piece.type] ?? 0;
+    const ref = `${pieceId}-${Date.now()}`;
+    if (!this.ledger.transfer(session.name, sellerArmy.name, price, "buyOpponentPiece", ref)) {
+      return send(session.socket, { t: "error", message: "not enough sats" });
+    }
+    if (!this.world.transferPiece(pieceId, session.armyId)) {
+      // unlikely; refund by reversing the transfer
+      this.ledger.transfer(sellerArmy.name, session.name, price, "buyOpponentPiece", `${ref}-rev`);
+      return send(session.socket, { t: "error", message: "transfer failed" });
+    }
+    send(session.socket, { t: "balance", sats: this.ledger.balanceOf(session.name) });
+    const sellerSession = [...this.sessions].find((s) => s.armyId === sellerArmy.id);
+    if (sellerSession) send(sellerSession.socket, { t: "balance", sats: this.ledger.balanceOf(sellerArmy.name) });
+    this.resnapshotAll();
+    this.broadcastRoster();
+    void this.persistStats();
+  }
+
+  /** Re-send each session a fresh snapshot of its interest region. Used when a
+   * piece changes owner (delta stream doesn't carry ownership/color changes). */
+  private resnapshotAll(): void {
+    const now = Date.now();
+    for (const s of this.sessions) {
+      const visible = this.world.piecesInZones(interestZones(s.focus.x, s.focus.y));
+      s.known.clear();
+      for (const p of visible) s.known.set(p.id, { x: p.x, y: p.y, readyAt: p.readyAt, forwardKey: forwardKey(p.forward) });
+      send(s.socket, { t: "snapshot", pieces: visible, serverNow: now });
     }
   }
 
