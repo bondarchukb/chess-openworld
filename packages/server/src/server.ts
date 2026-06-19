@@ -26,7 +26,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { World } from "./world.js";
 import { StatsStore, saveStats } from "./stats.js";
-import { Ledger } from "./ledger.js";
+import { Ledger, saveLedger } from "./ledger.js";
 import { providerFromEnv, type LightningProvider } from "./payments.js";
 
 interface Session {
@@ -34,6 +34,8 @@ interface Session {
   armyId: ArmyId | null;
   socket: WebSocket;
   name: string;
+  /** Stable money/stats key (client accountId, or name as fallback). */
+  account: string;
   /** Last known pieces in interest set (id -> last sent {x,y,readyAt,forward}). */
   known: Map<PieceId, { x: number; y: number; readyAt: number; forwardKey: string }>;
   focus: { x: number; y: number };
@@ -45,6 +47,8 @@ export interface ServerOptions {
   port: number;
   /** Where stats.json lives. Server auto-saves stats on every death. */
   statsPath?: string;
+  /** Where ledger.json lives (money entries + pool counters). */
+  ledgerPath?: string;
   onTick?: (tick: number) => void;
 }
 
@@ -56,7 +60,7 @@ export class GameServer {
   /** invoiceId -> pending deposit poll timer. */
   private depositPolls = new Map<string, ReturnType<typeof setInterval>>();
   /** offerId -> pending buy offer. */
-  private offers = new Map<string, { buyerArmyId: ArmyId; buyerName: string; sellerArmyId: ArmyId; pieceId: PieceId; price: number; timer: ReturnType<typeof setTimeout> }>();
+  private offers = new Map<string, { buyerArmyId: ArmyId; buyerAccount: string; sellerArmyId: ArmyId; pieceId: PieceId; price: number; timer: ReturnType<typeof setTimeout> }>();
   private http: HttpServer;
   private wss: WebSocketServer;
   private sessions = new Set<Session>();
@@ -109,7 +113,7 @@ export class GameServer {
         if (session) return;
         session = msg.asSpectator
           ? this.handleSpectatorJoin(socket, msg.name)
-          : this.handleJoin(socket, msg.name, msg.spawnMode ?? "classical", msg.gameMode ?? "open");
+          : this.handleJoin(socket, msg.name, msg.accountId, msg.spawnMode ?? "classical", msg.gameMode ?? "open");
         return;
       }
       if (!session) return send(socket, { t: "error", message: "join first" });
@@ -132,9 +136,16 @@ export class GameServer {
     });
   }
 
+  /** Resolve an army's money/stats key via its live session; fall back to the
+   * army name (e.g. bots, or a brief death window). */
+  private accountOfArmy(armyId: ArmyId): string {
+    const sess = [...this.sessions].find((s) => s.armyId === armyId);
+    return sess?.account ?? this.world.getArmy(armyId)?.name ?? "anon";
+  }
+
   private broadcastRoster(): void {
     const armies = [...this.world.armies.values()].map((a) => {
-      const s = this.stats.get(a.name);
+      const s = this.stats.get(this.accountOfArmy(a.id));
       return {
         id: a.id, name: a.name, color: a.color,
         spawnX: a.spawnX, spawnY: a.spawnY,
@@ -167,11 +178,11 @@ export class GameServer {
     let jackpot = 0;
     for (const loser of participants) {
       if (loser.id === winner.id) continue;
-      const s = this.stats.get(loser.name);
+      const s = this.stats.get(this.accountOfArmy(loser.id));
       jackpot += s.sats;
       s.sats = 0;
     }
-    this.stats.get(winner.name).sats += jackpot;
+    this.stats.get(this.accountOfArmy(winner.id)).sats += jackpot;
     const msg: ServerMessage = {
       t: "dominationWin",
       winnerName: winner.name,
@@ -187,7 +198,7 @@ export class GameServer {
         clearTimeout(timer);
         this.respawnTimers.delete(a.id);
       }
-      this.stats.chargeSpawn(a.name);
+      this.stats.chargeSpawn(this.accountOfArmy(a.id));
       this.world.respawnArmy(a);
       const sess = [...this.sessions].find((s) => s.armyId === a.id);
       if (sess) sess.focus = { x: a.spawnX, y: a.spawnY };
@@ -198,17 +209,21 @@ export class GameServer {
   private handleJoin(
     socket: WebSocket,
     name: string,
+    accountId: string | undefined,
     spawnMode: "classical" | "blob",
     gameMode: GameMode,
   ): Session {
+    // Stable money/stats key: the client's accountId, or the name as fallback.
+    const account = accountId || name || "anon";
     // Charge spawn cost up front. Broke players still get an army (partial
     // charge) — losing pieces will be the real penalty.
-    this.stats.chargeSpawn(name || "anon");
+    this.stats.chargeSpawn(account);
     const army = this.world.spawnArmy(name || "anon", spawnMode, gameMode);
     const session: Session = {
       armyId: army.id,
       socket,
       name: army.name,
+      account,
       known: new Map(),
       focus: { x: army.spawnX, y: army.spawnY },
       forwardDirty: new Set(),
@@ -216,7 +231,7 @@ export class GameServer {
     this.sessions.add(session);
 
     const now = Date.now();
-    const stats = this.stats.get(session.name);
+    const stats = this.stats.get(account);
     send(socket, {
       t: "welcome",
       you: {
@@ -241,6 +256,7 @@ export class GameServer {
       armyId: null,
       socket,
       name: name || "anon-spectator",
+      account: name || "anon-spectator",
       known: new Map(),
       // Default focus to (0,0) — first army's spawn. Spectator can pan.
       focus: { x: 0, y: 0 },
@@ -296,12 +312,13 @@ export class GameServer {
         if (res.captured && !res.capturedKingOf) {
           const victimArmy = this.world.getArmy(res.captured.owner);
           if (victimArmy) {
-            this.stats.transferCapture(session.name, victimArmy.name, res.captured.type);
+            const victimAccount = this.accountOfArmy(victimArmy.id);
+            this.stats.transferCapture(session.account, victimAccount, res.captured.type);
             rosterDirty = true;
             // Push fresh balances so both HUDs reflect the sat transfer.
-            send(session.socket, { t: "balance", sats: this.stats.get(session.name).sats });
+            send(session.socket, { t: "balance", sats: this.stats.get(session.account).sats });
             const victimSession = [...this.sessions].find((s) => s.armyId === victimArmy.id);
-            if (victimSession) send(victimSession.socket, { t: "balance", sats: this.stats.get(victimArmy.name).sats });
+            if (victimSession) send(victimSession.socket, { t: "balance", sats: this.stats.get(victimAccount).sats });
             void this.persistStats();
           }
         }
@@ -356,7 +373,7 @@ export class GameServer {
     if (!Number.isFinite(sats) || sats < 1 || sats > 10_000_000) {
       return send(session.socket, { t: "error", message: "invalid deposit amount" });
     }
-    const account = session.name;
+    const account = session.account;
     let inv;
     try {
       inv = await this.provider.createInvoice(sats, `topup ${account}`);
@@ -379,6 +396,7 @@ export class GameServer {
       if (this.ledger.deposit(account, sats, inv!.id)) {
         const balance = this.ledger.balanceOf(account);
         send(session.socket, { t: "depositCredited", sats, balance });
+        void this.persistStats();
       }
     })(), 1500);
     this.depositPolls.set(inv.id, poll);
@@ -390,7 +408,7 @@ export class GameServer {
   }
 
   private async handleWithdraw(session: Session, lnAddress: string, sats: number): Promise<void> {
-    const account = session.name;
+    const account = session.account;
     const balance = () => this.ledger.balanceOf(account);
     if (!lnAddress || !/^[^@\s]+@[^@\s]+$/.test(lnAddress)) {
       return send(session.socket, { t: "withdrawResult", ok: false, sats, balance: balance(), reason: "invalid Lightning address" });
@@ -424,13 +442,13 @@ export class GameServer {
     if (!sellerArmy) return send(session.socket, { t: "offerResolved", ok: false, reason: "no owner" });
     const sellerSession = [...this.sessions].find((s) => s.armyId === sellerArmy.id);
     if (!sellerSession) return send(session.socket, { t: "offerResolved", ok: false, reason: "owner not reachable" });
-    if (this.ledger.balanceOf(session.name) < price) return send(session.socket, { t: "offerResolved", ok: false, reason: "not enough sats" });
+    if (this.ledger.balanceOf(session.account) < price) return send(session.socket, { t: "offerResolved", ok: false, reason: "not enough sats" });
 
     const offerId = randomUUID();
     const timer = setTimeout(() => {
       if (this.offers.delete(offerId)) send(session.socket, { t: "offerResolved", ok: false, reason: "offer expired" });
     }, 30_000);
-    this.offers.set(offerId, { buyerArmyId: session.armyId, buyerName: session.name, sellerArmyId: sellerArmy.id, pieceId, price, timer });
+    this.offers.set(offerId, { buyerArmyId: session.armyId, buyerAccount: session.account, sellerArmyId: sellerArmy.id, pieceId, price, timer });
     send(sellerSession.socket, { t: "offerReceived", offerId, pieceId, pieceType: piece.type, price, fromName: session.name });
   }
 
@@ -454,20 +472,20 @@ export class GameServer {
       return;
     }
     const ref = `${offerId}`;
-    if (!this.ledger.transfer(offer.buyerName, session.name, offer.price, "buyOpponentPiece", ref)) {
+    if (!this.ledger.transfer(offer.buyerAccount, session.account, offer.price, "buyOpponentPiece", ref)) {
       if (buyerSession) send(buyerSession.socket, { t: "offerResolved", ok: false, reason: "buyer can't afford it" });
       return;
     }
     if (!this.world.transferPiece(offer.pieceId, offer.buyerArmyId)) {
-      this.ledger.transfer(session.name, offer.buyerName, offer.price, "buyOpponentPiece", `${ref}-rev`);
+      this.ledger.transfer(session.account, offer.buyerAccount, offer.price, "buyOpponentPiece", `${ref}-rev`);
       if (buyerSession) send(buyerSession.socket, { t: "offerResolved", ok: false, reason: "transfer failed" });
       return;
     }
     if (buyerSession) {
       send(buyerSession.socket, { t: "offerResolved", ok: true });
-      send(buyerSession.socket, { t: "balance", sats: this.ledger.balanceOf(offer.buyerName) });
+      send(buyerSession.socket, { t: "balance", sats: this.ledger.balanceOf(offer.buyerAccount) });
     }
-    send(session.socket, { t: "balance", sats: this.ledger.balanceOf(session.name) });
+    send(session.socket, { t: "balance", sats: this.ledger.balanceOf(session.account) });
     this.resnapshotAll();
     this.broadcastRoster();
     void this.persistStats();
@@ -490,11 +508,11 @@ export class GameServer {
     if (!army) return;
     if (army.dead) return; // already dying, ignore double-trigger
     const victimSession = [...this.sessions].find((s) => s.armyId === victimArmyId);
-    const victimName = victimSession?.name ?? army.name;
-    const killerStatsBefore = this.stats.get(killer.name);
+    const victimAccount = victimSession?.account ?? army.name;
+    const killerStatsBefore = this.stats.get(killer.account);
     const killerEloBefore = killerStatsBefore.elo;
-    const { winnerDelta, loserDelta, satsTransferred } = this.stats.applyKill(killer.name, victimName);
-    const victimStats = this.stats.get(victimName);
+    const { winnerDelta, loserDelta, satsTransferred } = this.stats.applyKill(killer.account, victimAccount);
+    const victimStats = this.stats.get(victimAccount);
     void winnerDelta;
     // Wipe board pieces immediately; respawn after delay.
     this.world.wipeArmy(victimArmyId);
@@ -514,7 +532,7 @@ export class GameServer {
     // Push refreshed stats to killer too so their HUD updates.
     send(killer.socket, {
       t: "respawned", // reuse: just a stats refresh; client treats as no-op if alive
-      stats: this.stats.get(killer.name),
+      stats: this.stats.get(killer.account),
     });
     // Schedule respawn.
     const existing = this.respawnTimers.get(victimArmyId);
@@ -532,12 +550,12 @@ export class GameServer {
     const army = this.world.getArmy(armyId);
     if (!army) return;
     // Charge the spawn cost again for the new army.
-    this.stats.chargeSpawn(army.name);
+    this.stats.chargeSpawn(this.accountOfArmy(armyId));
     this.world.respawnArmy(army);
     const victimSession = [...this.sessions].find((s) => s.armyId === armyId);
     if (victimSession) {
       victimSession.focus = { x: army.spawnX, y: army.spawnY };
-      send(victimSession.socket, { t: "respawned", stats: this.stats.get(victimSession.name) });
+      send(victimSession.socket, { t: "respawned", stats: this.stats.get(victimSession.account) });
     }
     this.broadcastRoster();
   }
@@ -548,6 +566,13 @@ export class GameServer {
         await saveStats(this.stats, this.opts.statsPath);
       } catch (err) {
         console.error("stats save failed", err);
+      }
+    }
+    if (this.opts.ledgerPath) {
+      try {
+        await saveLedger(this.ledger, this.opts.ledgerPath);
+      } catch (err) {
+        console.error("ledger save failed", err);
       }
     }
   }

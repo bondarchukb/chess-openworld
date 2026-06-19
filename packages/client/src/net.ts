@@ -65,6 +65,7 @@ export class Connection {
     private spawnMode: "classical" | "blob" = "classical",
     private asSpectator: boolean = false,
     private gameMode: GameMode = "open",
+    private accountId: string | undefined = undefined,
   ) {
     this.socket = new WebSocket(url);
     this.socket.addEventListener("open", () => {
@@ -72,6 +73,7 @@ export class Connection {
       this.send({
         t: "join",
         name: this.playerName,
+        accountId: this.accountId,
         spawnMode: this.spawnMode,
         asSpectator: this.asSpectator,
         gameMode: this.gameMode,

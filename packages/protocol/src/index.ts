@@ -87,7 +87,7 @@ export const ARENA = {
 } as const;
 
 export type ClientMessage =
-  | { t: "join"; name: string; spawnMode?: SpawnMode; gameMode?: GameMode; asSpectator?: boolean }
+  | { t: "join"; name: string; accountId?: string; spawnMode?: SpawnMode; gameMode?: GameMode; asSpectator?: boolean }
   /** Move one of your pieces. Server validates ownership, legality, cooldown. */
   | { t: "pieceMove"; pieceId: PieceId; toX: number; toY: number }
   /** Rotate a pawn's forward direction. Long cooldown; only legal on pawns. */

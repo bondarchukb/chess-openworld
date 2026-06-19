@@ -16,6 +16,7 @@ import { PieceRegistry, STANDARD_PIECES, legalMovesPlaneFiltered, type Occupant 
 import { ARENA, WORLD, PIECE_SATS } from "@chess-openworld/protocol";
 import type { Piece, PieceId, SelfInfo } from "@chess-openworld/protocol";
 import { Connection } from "./net.js";
+import QRCode from "qrcode";
 import { CELL, TILE_DEFS, tileColor, tileTypeAt, worldToScreen } from "./iso.js";
 
 const PIECE_SVG: Record<string, string> = {
@@ -69,7 +70,13 @@ const asSpectator = spawnMode === "spectator";
 const gameMode: "open" | "domination" = spawnMode === "domination" ? "domination" : "open";
 const actualSpawnMode: "classical" | "blob" =
   spawnMode === "blob" ? "blob" : "classical";
-const conn = new Connection(wsUrl, name, actualSpawnMode, asSpectator, gameMode);
+// Stable per-browser account id so your sats balance persists across sessions.
+let accountId = localStorage.getItem("chess-mmo:accountId") ?? "";
+if (!accountId) {
+  accountId = (crypto.randomUUID?.() ?? `acc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  localStorage.setItem("chess-mmo:accountId", accountId);
+}
+const conn = new Connection(wsUrl, name, actualSpawnMode, asSpectator, gameMode, accountId);
 conn.onStatus = (t) => {
   // Map server status text to dot color. No more text noise in HUD.
   let color = "#888";
@@ -236,7 +243,8 @@ wallet.innerHTML =
   `<button id="w-cashout" style="flex:1">Cash Out</button></div>` +
   `<div id="w-invoice" style="margin-top:8px;display:none">` +
   `<div id="w-inv-status" style="color:#f9e2af">Invoice — pay to deposit:</div>` +
-  `<textarea id="w-inv-text" readonly style="width:100%;height:54px;margin-top:4px;font-size:10px;` +
+  `<img id="w-inv-qr" alt="invoice QR" style="display:block;width:180px;height:180px;margin:6px auto;background:#fff;border-radius:8px"/>` +
+  `<textarea id="w-inv-text" readonly style="width:100%;height:44px;margin-top:4px;font-size:10px;` +
   `background:#0b0e16;color:#94e2d5;border:1px solid #2a3350;border-radius:6px"></textarea></div>` +
   `<div id="w-msg" style="margin-top:6px;color:#a6adc8"></div>`;
 document.body.appendChild(wallet);
@@ -244,6 +252,7 @@ document.body.appendChild(wallet);
 const wBal = document.getElementById("w-bal")!;
 const wInvoice = document.getElementById("w-invoice") as HTMLDivElement;
 const wInvText = document.getElementById("w-inv-text") as HTMLTextAreaElement;
+const wInvQr = document.getElementById("w-inv-qr") as HTMLImageElement;
 const wInvStatus = document.getElementById("w-inv-status")!;
 const wMsg = document.getElementById("w-msg")!;
 
@@ -278,7 +287,9 @@ conn.onInvoice = (inv) => {
   wInvoice.style.display = "block";
   wInvStatus.textContent = `Pay ${formatSats(inv.sats)} sats to deposit:`;
   wInvText.value = inv.bolt11;
-  wInvText.select();
+  QRCode.toDataURL(inv.bolt11.toUpperCase(), { margin: 1, width: 180 })
+    .then((url) => { wInvQr.src = url; })
+    .catch(() => { wInvQr.removeAttribute("src"); });
   wMsg.textContent = "Waiting for payment…";
 };
 conn.onDepositCredited = (d) => {

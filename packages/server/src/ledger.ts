@@ -10,6 +10,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import type { StatsStore } from "./stats.js";
 
 export type LedgerKind = "deposit" | "withdraw" | "refund" | "buyPiece" | "buyOpponentPiece";
@@ -105,4 +107,14 @@ export class Ledger {
     this.poolPaidOut = data.poolPaidOut ?? 0;
     this.seen = new Set(this.entries.map((e) => e.idempotencyKey));
   }
+}
+
+export async function saveLedger(ledger: Ledger, path: string): Promise<void> {
+  await writeFile(path, JSON.stringify(ledger.serialize(), null, 2), "utf8");
+}
+
+export async function loadLedger(ledger: Ledger, path: string): Promise<boolean> {
+  if (!existsSync(path)) return false;
+  ledger.loadFrom(JSON.parse(await readFile(path, "utf8")) as PersistedLedger);
+  return true;
 }

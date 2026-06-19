@@ -214,11 +214,6 @@ export class World {
     // 1) Basic move legality (movement pattern + capture rules).
     const moves = legalMovesPlane(planePiece, piece.x, piece.y, this.registry, occupant, WORLD.maxRideRange);
     if (!moves.some((m) => m.x === toX && m.y === toY)) {
-      console.log(
-        `[tryMove reject] ${piece.type} ${piece.id} owner=${piece.owner} from=(${piece.x},${piece.y}) ` +
-          `to=(${toX},${toY}) hasMoved=${piece.hasMoved} forward=${JSON.stringify(piece.forward)} ` +
-          `legal=${JSON.stringify(moves)}`
-      );
       return { ok: false, reason: "illegal move" };
     }
 

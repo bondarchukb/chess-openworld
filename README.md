@@ -1,182 +1,106 @@
-# Chess Open World
+# Chess Open World ⚡
 
-A colorful, open-world multiplayer chess **MMO** — built around an
-authoritative, zoned world server (the hard part of any MMO) with a
+A colorful, open-world multiplayer chess **MMO** with a real **Bitcoin Lightning**
+economy. Every piece is denominated in sats: capture pieces to earn, buy pieces
+off your opponents, deposit real Lightning to top up, and cash your winnings out
+to any Lightning address.
+
+Built on an authoritative, zoned world server (the hard part of any MMO) with a
 data-driven rules engine and an isometric web client.
 
-This repo is the **step-4 architecture vertical slice**: it runs, it's tested,
-and every load-bearing seam an MMO needs is present. It is a foundation to
-*harden into scale*, not a finished product.
+## What makes it interesting
 
-> 📖 **New here? Read [CONCEPTS.md](./CONCEPTS.md)** — a guided tour of every
-> idea in the game: the world, zones, interest management, the chess engine,
-> data-driven pieces and effects, seats, the camera, persistence, and how to
-> extend it. The rest of this file is about running and deploying.
+- **Sat economy** — every piece is worth real sats (`PIECE_SATS`). Capturing a
+  piece transfers its value from victim to attacker; capturing a king is the
+  jackpot. Spawning an army costs sats.
+- **Lightning money layer** — deposit real sats (Lightning invoice / QR),
+  withdraw winnings to a Lightning address, all over [coinos](https://coinos.io).
+  A custodial pool wallet + an internal ledger with idempotency and a solvency
+  invariant (the house never pays out more than it took in).
+- **Buy your opponent's pieces** — make a sat **offer** on any enemy piece; the
+  owner accepts or declines. On accept the piece *defects* to you and the sats
+  move buyer → seller. (Kings can't be bought.)
+- **Domination mode** — a bounded arena battle royale: last army standing in the
+  ring wins the whole sat pot. Coexists with open casual roaming in one world.
+- **Data-driven pieces** — pieces are data (`rides` + `hops`), not hardcoded
+  logic. A custom "amazon" (queen + knight) is a few lines, no engine changes.
 
-## What's here
+## Layout
 
 ```
 packages/
   engine/     Deterministic, data-driven chess rules. Pure & unit-tested.
-  protocol/   Shared client/server wire types + world constants.
-  server/     Authoritative zoned world: interest management, tick sim, persistence.
-  client/     Isometric (2.5D) PixiJS web client.
+  protocol/   Shared client/server wire types + world constants + PIECE_SATS.
+  server/     Authoritative zoned world: interest mgmt, tick sim, payments, ledger.
+  client/     Isometric (2.5D) PixiJS web client + wallet UI.
+  bots/       Autonomous players for load + play-testing.
+paywall-shop/ Standalone Next.js Lightning checkout (coinos LNURL-pay reference).
 ```
 
-### The four MMO seams (why this is "step 4", not a toy)
+The four MMO seams: authoritative server (clients send intents, server owns all
+state), zone spatial partitioning, per-tick interest management (enter/leave/move
+deltas), and persistence (world + stats + ledger to disk).
 
-1. **Authoritative server** — clients send *intents*; the server validates
-   everything with the engine and owns all state. Nothing is trusted.
-   (`server/src/world.ts`, `tryBoardMove`)
-2. **Spatial partitioning** — every entity is indexed by **zone**, so "what's
-   near this player" is a ~9-zone lookup, not a world scan. This is where zones
-   later move to separate processes/machines. (`protocol` `zoneOf` / `interestZones`)
-3. **Interest management** — each tick, every player gets only the *changes* to
-   their interest set (`enter` / `leave` / `move`). This is what lets an MMO
-   show many entities without broadcasting the whole world. (`server/src/server.ts` `step`)
-4. **Persistence** — the world snapshots to disk and reloads on boot. Swap the
-   JSON file for Postgres (Nakama's model) to scale. (`server/src/persistence.ts`)
+## Run it
 
-### Data-driven rules (your differentiator)
-
-Pieces are **data**, not hardcoded logic — `rides` (sliders) + `hops` (leapers).
-A custom "amazon" (queen + knight) is a few lines in a `PieceRegistry`, no engine
-changes. Skins are cosmetic-only and never touch rules, so the world can be as
-colorful and custom as you like (pieces, buildings, artifacts).
-
-## Run it on your machine
-
-### 1. Prerequisites
-
-- **Node.js 20 or newer** (22 LTS recommended) and **npm 10+**.
-  Check with `node -v` && `npm -v`. If you don't have it, install from
-  <https://nodejs.org> (the LTS installer) or via `nvm install --lts`.
-- A modern browser (Chrome, Edge, Firefox, or Safari).
-- That's it — no database, Docker, or accounts needed to run locally.
-
-### 2. Get the code & install
+Prereqs: **Node 20+** and **npm 10+**. No accounts or DB needed for local play.
 
 ```bash
-git clone https://github.com/bondarchukb/chess-openworld.git
-cd chess-openworld
-npm install            # installs all four packages (npm workspaces)
+npm install
+npm run dev        # server on ws://localhost:8080, client on http://localhost:5173
 ```
 
-### 3. Start everything with one command
+Open **http://localhost:5173**. Open a second tab to play yourself.
+
+Variants:
+```bash
+npm run watch      # server + client + a few bots
+npm run share      # server + client + a public cloudflared tunnel
+npm test           # engine unit tests + integration
+```
+
+### Controls
+
+**WASD / arrows** walk · **drag** pan · **scroll** zoom · **C** recenter ·
+**Enter** take a seat at the board · **click** your piece then a square to move ·
+**click an enemy piece** to make a buy offer · wallet panel (bottom-right) to
+**Top Up** / **Cash Out**.
+
+## Money: mock vs. real
+
+By default the server runs a **mock Lightning provider** — deposits auto-settle
+after a couple seconds so you can demo the whole loop with no real money.
+
+To use real Lightning, set the coinos pool wallet token (server-side only):
 
 ```bash
-npm run dev
+COINOS_TOKEN=<your-coinos-api-token> npm run dev
+# optional: COINOS_URL=https://coinos.io/api
 ```
 
-This builds the shared `protocol` package, then launches **both** halves together
-(color-tagged in your terminal):
+With the token set, `CoinosProvider` mints real invoices (`POST /invoice`),
+confirms settlement, and pays withdrawals to Lightning addresses
+(`POST /send/:addr/:amount`).
 
-- `server` — the world server on `ws://localhost:8080`
-- `client` — the web client on `http://localhost:5173`
-
-Open **<http://localhost:5173>** in your browser. You should see a colorful
-isometric world with a chess board in the middle. The HUD (top-left) shows your
-connection status and the board state.
-
-> Prefer two terminals? Run the halves separately:
-> ```bash
-> npm run start -w @chess-openworld/server   # world server  (:8080)
-> npm run dev   -w @chess-openworld/client   # web client    (:5173)
-> ```
-
-### 4. Play with a friend (or yourself)
-
-Open a **second browser tab** at <http://localhost:5173>. You're now two players
-in the same world — walk apart and watch each other appear/disappear (interest
-management), or both press **Enter** at the board to play a real game of chess.
-
-### 5. Stop it
-
-Press **Ctrl-C** in the terminal. The server saves the world to
-`packages/server/world.save.json` on exit and reloads it next time — so your
-buildings, artifacts, and the board state persist across restarts. Delete that
-file to start fresh.
-
-### Troubleshooting
-
-| Symptom | Fix |
-| --- | --- |
-| HUD says `disconnected` | The server isn't running or `:8080` is blocked. Make sure `npm run dev` shows the `server` line; restart it. |
-| `EADDRINUSE :8080` or `:5173` | Another process owns the port. Stop it, or run the server on another port: `PORT=8090 npm run start -w @chess-openworld/server` (the client dev proxy expects 8080, so also update `packages/client/vite.config.ts` if you change it). |
-| Blank page / nothing renders | Hard-refresh (Ctrl-Shift-R). Check the browser console for errors. |
-| `npm install` fails | Confirm Node 20+ (`node -v`); delete `node_modules` and retry. |
-| Want a clean world | Delete `packages/server/world.save.json` and restart. |
-
-### Controls & how to play
-
-Controls: **WASD / arrows** to walk · **drag** to roam the camera anywhere on
-the map · **scroll** to zoom · **C** to recenter · **B** place a building ·
-**F** place an artifact · **Enter** to take a seat at the board · **click** a
-piece then a square to move it · **N** for a new game once one ends.
-
-The shared chess board sits at the center of the world. The first two players to
-press **Enter** become White and Black; only the seated player may move on their
-turn. Drop a **building** on a board square to wall it off, or an **artifact**
-next to the board to grant nearby pieces extra knight-like moves — terrain and
-artifacts genuinely change the rules. Open two browser tabs to see real-time
-sync, interest culling, and a two-player game.
-
-## Test
-
-```bash
-npm test            # engine unit tests + server integration test
-```
-
-The server integration test proves the architecture end-to-end: two players
-see each other when near, get culled when far apart, and the shared board
-rejects illegal moves while applying & broadcasting legal ones.
+> ⚠️ **Run on testnet.** The token has full spend authority over the pooled
+> wallet — never ship it to the client or commit it. Holding user funds and
+> paying out is custodial and may be regulated; start on testnet/regtest.
 
 ## Deploy
 
-The app is two pieces with two different hosting needs:
+- **client** → static host (Vercel/Netlify). Set `VITE_WS_URL` to your server's
+  `wss://…` URL.
+- **server** → a persistent host (Render/Fly/Railway/VM) — it's a long-lived
+  stateful WS process with a tick loop, not serverless. `Dockerfile` +
+  `render.yaml` included; health check at `/health`.
 
-| Piece | Nature | Where it can run |
-| --- | --- | --- |
-| **client** | static files | Vercel, Netlify, any static host ✅ |
-| **server** | long-lived stateful WS process + tick loop | Render / Fly / Railway / VM ✅ — **not** Vercel ❌ |
+## Known limitations / not done
 
-> **Why not all on Vercel?** Vercel is serverless: functions are short-lived
-> and stateless. The game server holds the whole world in memory, runs a 10 Hz
-> tick loop, and keeps sockets open — none of which survives in a serverless
-> function. So the client goes on Vercel; the server goes on a persistent host.
-
-**1. Server → Render** (free tier, WebSocket-friendly). Push to GitHub, then in
-Render: *New → Blueprint*, pick this repo. `render.yaml` + `Dockerfile` do the
-rest; health checks hit `/health`. You'll get a URL like
-`https://chess-openworld-server.onrender.com`.
-
-You can also run the server image anywhere Docker runs:
-
-```bash
-docker build -t chess-openworld-server .
-docker run -p 8080:8080 chess-openworld-server   # health: http://localhost:8080/health
-```
-
-**2. Client → Vercel.** Import the repo (root); `vercel.json` sets the build.
-Add an env var **`VITE_WS_URL`** = your server's `wss://…` URL (the Render URL
-above, with `wss://`). Redeploy and the client connects to your live server.
-
-> Note: the free server uses ephemeral disk, so the JSON world save resets on
-> redeploy/restart. Swap `persistence.ts` for Postgres for durable state.
-
-## Implemented vs. remaining
-
-**Done:** full standard chess (castling, en passant, under-promotion, checkmate /
-stalemate / 50-move draw); data-driven board effects (walls + auras) wired from
-world entities; seats + turn ownership; structure collision; UUID ids;
-tick-gated authoritative movement; full-state persistence; new-game flow.
-
-**Remaining:**
-
-- Threefold-repetition draw (needs position history) and a chess clock.
-- Multiple boards / match instances (only one shared board today).
-- More effect types and real piece skins (the `skin` field is plumbed but the
-  client still draws one glyph per piece type).
-- Client-side interpolation + prediction for smooth movement.
-- Sharded zones (**Nakama** or custom Node + Redis/Postgres) with player handoff
-  at zone borders; accounts, matchmaking, chat, and durable Postgres storage.
+- **Custodial**: coinos holds the float; a compromise of `COINOS_TOKEN` drains
+  the pool. No non-custodial path.
+- **Identity** is a per-browser `accountId` (localStorage) — enough to keep your
+  balance across sessions, but not authenticated. No login / signatures yet.
+- **Real Lightning path is implemented but exercised only via the mock provider**
+  in testing; a real testnet deposit/withdraw still needs a live token run.
+- Invoices show a QR + bolt11; no WebLN one-click pay.
+- `paywall-shop` is a separate app, not wired into the game.
