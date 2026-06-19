@@ -228,6 +228,8 @@ app.stage.addChild(uiLayer);
 const camera = { cx: 0, cy: 0, zoom: 1 };
 let selectedPiece: PieceId | null = null;
 let legalTargets: Set<string> = new Set();
+// Piece an incoming buy offer is for — highlighted on the board for the seller.
+let offeredPieceId: PieceId | null = null;
 
 conn.onWelcome = (you: SelfInfo) => {
   camera.cx = you.spawnX;
@@ -398,20 +400,21 @@ document.body.appendChild(offerBox);
 let pendingOfferId: string | null = null;
 conn.onOfferReceived = (o) => {
   pendingOfferId = o.offerId;
+  offeredPieceId = o.pieceId; // highlight it on the board
   offerBox.innerHTML =
     `<div style="margin-bottom:10px"><b>${o.fromName}</b> offers <b style="color:#f9e2af">${formatSats(o.price)} sats</b> ` +
-    `for your <b>${o.pieceType}</b>.<br>It will defect to them.</div>` +
+    `for your <b>${o.pieceType}</b> <span style="color:#94e2d5">(flashing on the board)</span>.<br>It will defect to them.</div>` +
     `<div style="display:flex;gap:8px;justify-content:center">` +
     `<button id="offer-yes" style="padding:6px 18px;background:#88ee66;color:#11151f;border:0;border-radius:6px;font-weight:700;cursor:pointer">Sell</button>` +
     `<button id="offer-no" style="padding:6px 18px;background:#ff5577;color:#fff;border:0;border-radius:6px;font-weight:700;cursor:pointer">Decline</button></div>`;
   offerBox.style.display = "block";
-  const close = (accept: boolean) => { offerBox.style.display = "none"; pendingOfferId = null; conn.respondOffer(o.offerId, accept); };
+  const close = (accept: boolean) => { offerBox.style.display = "none"; pendingOfferId = null; offeredPieceId = null; conn.respondOffer(o.offerId, accept); };
   document.getElementById("offer-yes")!.onclick = () => close(true);
   document.getElementById("offer-no")!.onclick = () => close(false);
 };
 conn.onOfferCancelled = (offerId) => {
   // Buyer retracted (or it expired) — dismiss the seller's prompt if it matches.
-  if (pendingOfferId === offerId) { offerBox.style.display = "none"; pendingOfferId = null; }
+  if (pendingOfferId === offerId) { offerBox.style.display = "none"; pendingOfferId = null; offeredPieceId = null; }
 };
 conn.onOfferResolved = (r) => {
   wCancelOffer.style.display = "none";
@@ -677,6 +680,18 @@ app.ticker.add((tk) => {
   overlayLayer.removeChildren();
   // Arena boundary first so it sits behind everything else.
   drawArenaOverlay();
+  // Flash the piece an incoming buy offer is for, so the seller sees which one.
+  if (offeredPieceId) {
+    const op = conn.pieces.get(offeredPieceId);
+    if (op) {
+      const { sx, sy } = worldToScreen(op.x, op.y);
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 150);
+      const ring = new Graphics();
+      ring.rect(sx - CELL / 2 + 1, sy - CELL / 2 + 1, CELL - 2, CELL - 2)
+        .stroke({ color: 0x00e5ff, width: 4, alpha: 0.4 + 0.6 * pulse });
+      overlayLayer.addChild(ring);
+    }
+  }
   // Forward-direction arrow for every visible pawn (always shown).
   for (const piece of conn.pieces.values()) {
     if (piece.type !== "pawn" || !piece.forward) continue;
