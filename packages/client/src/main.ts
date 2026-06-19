@@ -239,9 +239,26 @@ conn.onWithdrawResult = (r) => {
   refreshWallet();
 };
 conn.onBalance = () => refreshWallet();
+// In-page offer prompt — NOT confirm(), which browsers suppress in background tabs.
+const offerBox = document.createElement("div");
+offerBox.id = "offerbox";
+offerBox.style.cssText =
+  "position:fixed;left:50%;top:18%;transform:translateX(-50%);min-width:300px;display:none;" +
+  "background:rgba(16,18,28,.97);border:2px solid #f9e2af;border-radius:12px;padding:16px;" +
+  "color:#cdd6f4;font:14px/1.5 system-ui;z-index:200;box-shadow:0 8px 32px rgba(0,0,0,.5);text-align:center;";
+document.body.appendChild(offerBox);
+
 conn.onOfferReceived = (o) => {
-  const accept = confirm(`${o.fromName} offers ${formatSats(o.price)} sats for your ${o.pieceType}. Sell? It defects to them.`);
-  conn.respondOffer(o.offerId, accept);
+  offerBox.innerHTML =
+    `<div style="margin-bottom:10px"><b>${o.fromName}</b> offers <b style="color:#f9e2af">${formatSats(o.price)} sats</b> ` +
+    `for your <b>${o.pieceType}</b>.<br>It will defect to them.</div>` +
+    `<div style="display:flex;gap:8px;justify-content:center">` +
+    `<button id="offer-yes" style="padding:6px 18px;background:#88ee66;color:#11151f;border:0;border-radius:6px;font-weight:700;cursor:pointer">Sell</button>` +
+    `<button id="offer-no" style="padding:6px 18px;background:#ff5577;color:#fff;border:0;border-radius:6px;font-weight:700;cursor:pointer">Decline</button></div>`;
+  offerBox.style.display = "block";
+  const close = (accept: boolean) => { offerBox.style.display = "none"; conn.respondOffer(o.offerId, accept); };
+  document.getElementById("offer-yes")!.onclick = () => close(true);
+  document.getElementById("offer-no")!.onclick = () => close(false);
 };
 conn.onOfferResolved = (r) => {
   wMsg.textContent = r.ok ? "Offer accepted — piece is yours ✓" : `Offer ${r.reason ?? "declined"}`;
