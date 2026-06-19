@@ -119,6 +119,12 @@ export class GameServer {
           : this.handleJoin(socket, msg.name, msg.accountId, msg.spawnMode ?? "classical", msg.gameMode ?? "open");
         return;
       }
+      // Allow depositing before joining (entry-screen top-up), keyed by accountId.
+      if (msg.t === "depositRequest" && !session) {
+        if (!msg.accountId) return send(socket, { t: "error", message: "no account" });
+        void this.handleDeposit(socket, msg.accountId, msg.sats);
+        return;
+      }
       if (!session) return send(socket, { t: "error", message: "join first" });
       this.handleMessage(session, msg);
     });
@@ -363,7 +369,7 @@ export class GameServer {
         break;
       }
       case "depositRequest":
-        void this.handleDeposit(session, msg.sats);
+        void this.handleDeposit(session.socket, session.account, msg.sats);
         break;
       case "withdrawRequest":
         void this.handleWithdraw(session, msg.lnAddress, msg.sats);
@@ -385,18 +391,17 @@ export class GameServer {
 
   // ---- Lightning money layer ------------------------------------------------
 
-  private async handleDeposit(session: Session, sats: number): Promise<void> {
+  private async handleDeposit(socket: WebSocket, account: string, sats: number): Promise<void> {
     if (!Number.isFinite(sats) || sats < 1 || sats > 10_000_000) {
-      return send(session.socket, { t: "error", message: "invalid deposit amount" });
+      return send(socket, { t: "error", message: "invalid deposit amount" });
     }
-    const account = session.account;
     let inv;
     try {
       inv = await this.provider.createInvoice(sats, `topup ${account}`);
     } catch {
-      return send(session.socket, { t: "error", message: "could not create invoice" });
+      return send(socket, { t: "error", message: "could not create invoice" });
     }
-    send(session.socket, { t: "invoice", invoiceId: inv.id, bolt11: inv.bolt11, sats });
+    send(socket, { t: "invoice", invoiceId: inv.id, bolt11: inv.bolt11, sats });
     // Mock provider: simulate the user paying shortly so the demo self-drives.
     if (this.provider.isMock && this.provider.settle) {
       setTimeout(() => this.provider.settle?.(inv!.id), 2500);
@@ -411,7 +416,7 @@ export class GameServer {
       this.clearDepositPoll(inv!.id);
       if (this.ledger.deposit(account, sats, inv!.id)) {
         const balance = this.ledger.balanceOf(account);
-        send(session.socket, { t: "depositCredited", sats, balance });
+        send(socket, { t: "depositCredited", sats, balance });
         void this.persistStats();
       }
     })(), 1500);

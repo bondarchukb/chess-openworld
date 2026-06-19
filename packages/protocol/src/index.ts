@@ -98,8 +98,9 @@ export type ClientMessage =
   | { t: "reorient"; pieceId: PieceId; dir: [number, number] }
   /** Camera position — server streams interest around this point. */
   | { t: "focus"; x: number; y: number }
-  /** Top up: ask the server to mint a Lightning invoice for `sats`. */
-  | { t: "depositRequest"; sats: number }
+  /** Top up: ask the server to mint a Lightning invoice for `sats`. The
+   * accountId is required when depositing before joining (entry screen). */
+  | { t: "depositRequest"; sats: number; accountId?: string }
   /** Cash out `sats` to a Lightning address. */
   | { t: "withdrawRequest"; lnAddress: string; sats: number }
   /** Offer to buy (defect) an enemy piece for `price` sats. Owner must accept. */

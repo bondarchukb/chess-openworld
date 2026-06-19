@@ -48,6 +48,7 @@ export class Connection {
   /** Best-known server clock offset (serverNow - clientNow), ms. */
   serverOffset = 0;
   onStatus: (text: string) => void = () => {};
+  onOpen: () => void = () => {};
   onWelcome: (self: SelfInfo) => void = () => {};
   onDead: (info: DeadInfo) => void = () => {};
   onRespawned: () => void = () => {};
@@ -67,18 +68,12 @@ export class Connection {
     private asSpectator: boolean = false,
     private gameMode: GameMode = "open",
     private accountId: string | undefined = undefined,
+    private autoJoin: boolean = true,
   ) {
     this.socket = new WebSocket(url);
     this.socket.addEventListener("open", () => {
-      this.onStatus("connected — joining…");
-      this.send({
-        t: "join",
-        name: this.playerName,
-        accountId: this.accountId,
-        spawnMode: this.spawnMode,
-        asSpectator: this.asSpectator,
-        gameMode: this.gameMode,
-      });
+      this.onOpen();
+      if (this.autoJoin) this.join();
     });
     this.socket.addEventListener("close", () => this.onStatus("disconnected"));
     this.socket.addEventListener("error", () => this.onStatus("connection error"));
@@ -193,8 +188,25 @@ export class Connection {
     if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(msg));
   }
 
+  /** Join the world. Call manually when autoJoin=false (e.g. after an entry deposit). */
+  join(): void {
+    this.onStatus("connected — joining…");
+    this.send({
+      t: "join",
+      name: this.playerName,
+      accountId: this.accountId,
+      spawnMode: this.spawnMode,
+      asSpectator: this.asSpectator,
+      gameMode: this.gameMode,
+    });
+  }
+
+  get isOpen(): boolean {
+    return this.socket.readyState === WebSocket.OPEN;
+  }
+
   requestDeposit(sats: number): void {
-    this.send({ t: "depositRequest", sats });
+    this.send({ t: "depositRequest", sats, accountId: this.accountId });
   }
   requestWithdraw(lnAddress: string, sats: number): void {
     this.send({ t: "withdrawRequest", lnAddress, sats });

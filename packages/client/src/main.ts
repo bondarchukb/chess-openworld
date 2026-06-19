@@ -79,7 +79,50 @@ if (!accountId) {
   accountId = (crypto.randomUUID?.() ?? `acc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   sessionStorage.setItem("chess-mmo:accountId", accountId);
 }
-const conn = new Connection(wsUrl, name, actualSpawnMode, asSpectator, gameMode, accountId);
+const conn = new Connection(wsUrl, name, actualSpawnMode, asSpectator, gameMode, accountId, /* autoJoin */ false);
+
+// Entry funding step: optional Lightning top-up (real QR) before you spawn.
+// Spectators skip it. Resolves when the player clicks "Enter the world".
+await entryFund();
+conn.join();
+
+async function entryFund(): Promise<void> {
+  if (asSpectator) return;
+  // Wait for the socket to open so we can mint invoices.
+  await new Promise<void>((res) => { if (conn.isOpen) res(); else conn.onOpen = () => res(); });
+
+  return new Promise<void>((resolve) => {
+    const ov = document.createElement("div");
+    ov.style.cssText =
+      "position:fixed;inset:0;z-index:400;display:flex;align-items:center;justify-content:center;" +
+      "background:#15102a;font:14px/1.5 system-ui;color:#cdd6f4";
+    const stakeLine = gameMode === "domination"
+      ? `<div style="color:#f9e2af;margin-bottom:8px">⚔ Domination buy-in: <b>5,000 sats</b> — winner takes the pot.</div>`
+      : `<div style="color:#a6adc8;margin-bottom:8px">Open world — fund your wallet to spawn armies and buy pieces.</div>`;
+    ov.innerHTML =
+      `<div style="background:linear-gradient(180deg,#171a28,#11131d);border:1px solid #2a3350;border-radius:16px;` +
+      `padding:24px;max-width:340px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.55)">` +
+      `<div style="font-weight:700;font-size:18px;margin-bottom:6px">⚡ Fund your entry</div>${stakeLine}` +
+      `<div id="ef-amt" style="margin:6px 0">Top up <b id="ef-val">5,000</b> sats</div>` +
+      `<img id="ef-qr" alt="" style="display:none;width:200px;height:200px;margin:8px auto;background:#fff;border-radius:10px"/>` +
+      `<div id="ef-status" style="color:#a6adc8;min-height:18px;margin:6px 0"></div>` +
+      `<div style="display:flex;gap:8px;justify-content:center;margin-top:10px">` +
+      `<button id="ef-pay" style="padding:9px 16px;background:#94e2d5;color:#11151f;border:0;border-radius:8px;font-weight:700;cursor:pointer">Top up ⚡</button>` +
+      `<button id="ef-enter" style="padding:9px 18px;background:#f9e2af;color:#11151f;border:0;border-radius:8px;font-weight:700;cursor:pointer">Enter the world</button>` +
+      `</div>`;
+    document.body.appendChild(ov);
+    const qr = ov.querySelector("#ef-qr") as HTMLImageElement;
+    const status = ov.querySelector("#ef-status")!;
+    conn.onInvoice = (inv) => {
+      QRCode.toDataURL(inv.bolt11.toUpperCase(), { margin: 1, width: 200 })
+        .then((u) => { qr.src = u; qr.style.display = "block"; }).catch(() => {});
+      status.textContent = `Scan to pay ${formatSats(inv.sats)} sats…`;
+    };
+    conn.onDepositCredited = (d) => { status.textContent = `Funded ${formatSats(d.sats)} sats ✓`; qr.style.display = "none"; };
+    (ov.querySelector("#ef-pay") as HTMLButtonElement).onclick = () => { conn.requestDeposit(5000); };
+    (ov.querySelector("#ef-enter") as HTMLButtonElement).onclick = () => { ov.remove(); resolve(); };
+  });
+}
 conn.onStatus = (t) => {
   // Map server status text to dot color. No more text noise in HUD.
   let color = "#888";
