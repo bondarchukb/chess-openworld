@@ -233,10 +233,10 @@ export class GameServer {
   ): Session {
     // Stable money/stats key: the client's accountId, or the name as fallback.
     const account = accountId || name || "anon";
-    // Domination is a staked match: ante the fixed equal buy-in into the pot.
-    // Open mode just charges the army spawn cost.
+    // Domination is a staked match: ante the fixed buy-in into the pot.
+    // Open mode fields the army for free — your deposit stays your balance and
+    // sats only move when pieces are captured or bought (no burned spawn cost).
     if (gameMode === "domination") this.anteDomination(account);
-    else this.stats.chargeSpawn(account);
     const army = this.world.spawnArmy(name || "anon", spawnMode, gameMode);
     const session: Session = {
       armyId: army.id,
@@ -582,9 +582,8 @@ export class GameServer {
     this.respawnTimers.delete(armyId);
     const army = this.world.getArmy(armyId);
     if (!army) return;
-    // Re-pay to re-enter: domination antes back into the pot, open mode pays spawn.
+    // Domination re-antes into the pot to re-enter; open mode respawns free.
     if (army.gameMode === "domination") this.anteDomination(this.accountOfArmy(armyId));
-    else this.stats.chargeSpawn(this.accountOfArmy(armyId));
     this.world.respawnArmy(army);
     const victimSession = [...this.sessions].find((s) => s.armyId === armyId);
     if (victimSession) {

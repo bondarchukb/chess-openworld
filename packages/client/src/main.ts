@@ -96,11 +96,11 @@ async function entryFund(): Promise<void> {
     ov.style.cssText =
       "position:fixed;inset:0;z-index:400;display:flex;align-items:center;justify-content:center;" +
       "background:#15102a;font:14px/1.5 system-ui;color:#cdd6f4";
-    // No free grant — you must deposit to play. Domination needs >= the buy-in.
-    const minToEnter = gameMode === "domination" ? 5000 : 6400;
+    // No free grant — you must deposit to play. Min buy-in 5,000.
+    const minToEnter = 5000;
     const stakeLine = gameMode === "domination"
-      ? `<div style="color:#f9e2af;margin-bottom:8px">⚔ Domination buy-in: <b>5,000 sats</b> — winner takes the pot.</div>`
-      : `<div style="color:#a6adc8;margin-bottom:8px">Open world — deposit to spawn your army (6,400 sats) and buy pieces.</div>`;
+      ? `<div style="color:#f9e2af;margin-bottom:8px">⚔ Domination buy-in: <b>5,000 sats</b> bet into the pot — winner takes it.</div>`
+      : `<div style="color:#a6adc8;margin-bottom:8px">Open world — your deposit stays your balance. Army is free; sats move only when pieces are captured or bought.</div>`;
     ov.innerHTML =
       `<div style="background:linear-gradient(180deg,#171a28,#11131d);border:1px solid #2a3350;border-radius:16px;` +
       `padding:24px;max-width:340px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.55)">` +
@@ -125,6 +125,7 @@ async function entryFund(): Promise<void> {
       enterBtn.style.background = ok ? "#f9e2af" : "#3a3f52";
       enterBtn.style.color = ok ? "#11151f" : "#888";
     };
+    const payBtn = ov.querySelector("#ef-pay") as HTMLButtonElement;
     conn.onInvoice = (inv) => {
       QRCode.toDataURL(inv.bolt11.toUpperCase(), { margin: 1, width: 200 })
         .then((u) => { qr.src = u; qr.style.display = "block"; }).catch(() => {});
@@ -135,9 +136,18 @@ async function entryFund(): Promise<void> {
       balEl.textContent = formatSats(funded);
       status.textContent = `Funded ${formatSats(d.sats)} sats ✓`;
       qr.style.display = "none";
+      payBtn.disabled = false; // ready for another deposit if wanted
+      payBtn.textContent = "Deposit 5,000 ⚡";
       updateEnter();
     };
-    (ov.querySelector("#ef-pay") as HTMLButtonElement).onclick = () => { conn.requestDeposit(5000); };
+    // One invoice at a time — prevents accidental double-mint (with real
+    // Lightning each invoice must actually be paid anyway).
+    payBtn.onclick = () => {
+      if (payBtn.disabled) return;
+      payBtn.disabled = true;
+      payBtn.textContent = "Waiting for payment…";
+      conn.requestDeposit(5000);
+    };
     enterBtn.onclick = () => { if (!enterBtn.disabled) { ov.remove(); resolve(); } };
   });
 }
