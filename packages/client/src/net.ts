@@ -58,6 +58,7 @@ export class Connection {
   onBalance: (sats: number) => void = () => {};
   onOfferReceived: (info: { offerId: string; pieceId: PieceId; pieceType: string; price: number; fromName: string }) => void = () => {};
   onOfferResolved: (info: { ok: boolean; reason?: string }) => void = () => {};
+  onOfferCancelled: (offerId: string) => void = () => {};
 
   constructor(
     url: string,
@@ -179,6 +180,9 @@ export class Connection {
       case "offerResolved":
         this.onOfferResolved({ ok: msg.ok, reason: msg.reason });
         break;
+      case "offerCancelled":
+        this.onOfferCancelled(msg.offerId);
+        break;
       case "error":
         this.onStatus(`server: ${msg.message}`);
         break;
@@ -200,5 +204,8 @@ export class Connection {
   }
   respondOffer(offerId: string, accept: boolean): void {
     this.send({ t: "offerResponse", offerId, accept });
+  }
+  cancelOffer(): void {
+    this.send({ t: "cancelOffer" });
   }
 }

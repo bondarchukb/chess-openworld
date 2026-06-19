@@ -361,6 +361,9 @@ export class GameServer {
       case "offerResponse":
         this.handleOfferResponse(session, msg.offerId, msg.accept);
         break;
+      case "cancelOffer":
+        this.handleCancelOffer(session);
+        break;
       case "ping":
         send(session.socket, { t: "pong" });
         break;
@@ -450,6 +453,18 @@ export class GameServer {
     }, 30_000);
     this.offers.set(offerId, { buyerArmyId: session.armyId, buyerAccount: session.account, sellerArmyId: sellerArmy.id, pieceId, price, timer });
     send(sellerSession.socket, { t: "offerReceived", offerId, pieceId, pieceType: piece.type, price, fromName: session.name });
+  }
+
+  /** Buyer retracts their own pending offer(s). */
+  private handleCancelOffer(session: Session): void {
+    for (const [id, offer] of this.offers) {
+      if (offer.buyerArmyId !== session.armyId) continue;
+      clearTimeout(offer.timer);
+      this.offers.delete(id);
+      send(session.socket, { t: "offerResolved", ok: false, reason: "cancelled" });
+      const sellerSession = [...this.sessions].find((s) => s.armyId === offer.sellerArmyId);
+      if (sellerSession) send(sellerSession.socket, { t: "offerCancelled", offerId: id });
+    }
   }
 
   /** Owner accepts/declines a pending offer. On accept, move sats + defect the piece. */

@@ -102,6 +102,8 @@ export type ClientMessage =
   | { t: "buyOffer"; pieceId: PieceId; price: number }
   /** Owner's accept/decline of an incoming buy offer. */
   | { t: "offerResponse"; offerId: string; accept: boolean }
+  /** Buyer retracts their own pending buy offer(s). */
+  | { t: "cancelOffer" }
   | { t: "ping" };
 
 // ---- Server -> Client -------------------------------------------------------
@@ -189,6 +191,8 @@ export type ServerMessage =
   | { t: "offerReceived"; offerId: string; pieceId: PieceId; pieceType: string; price: number; fromName: string }
   /** Sent to the offer maker once the owner responds or it times out. */
   | { t: "offerResolved"; ok: boolean; reason?: string }
+  /** Tells the owner a pending offer is gone (buyer cancelled / expired). */
+  | { t: "offerCancelled"; offerId: string }
   | { t: "error"; message: string }
   | { t: "pong" };
 

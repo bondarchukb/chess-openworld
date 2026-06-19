@@ -249,7 +249,8 @@ wallet.innerHTML =
   `<img id="w-inv-qr" alt="invoice QR" style="display:block;width:180px;height:180px;margin:6px auto;background:#fff;border-radius:8px"/>` +
   `<textarea id="w-inv-text" readonly style="width:100%;height:44px;margin-top:4px;font-size:10px;` +
   `background:#0b0e16;color:#94e2d5;border:1px solid #2a3350;border-radius:6px"></textarea></div>` +
-  `<div id="w-msg" style="margin-top:6px;color:#a6adc8"></div>`;
+  `<div id="w-msg" style="margin-top:6px;color:#a6adc8"></div>` +
+  `<button id="w-cancel-offer" style="display:none;margin-top:6px;width:100%;background:#ff5577;color:#fff;border:0;border-radius:6px;padding:6px;cursor:pointer">Cancel offer</button>`;
 document.body.appendChild(wallet);
 
 const wBal = document.getElementById("w-bal")!;
@@ -258,6 +259,8 @@ const wInvText = document.getElementById("w-inv-text") as HTMLTextAreaElement;
 const wInvQr = document.getElementById("w-inv-qr") as HTMLImageElement;
 const wInvStatus = document.getElementById("w-inv-status")!;
 const wMsg = document.getElementById("w-msg")!;
+const wCancelOffer = document.getElementById("w-cancel-offer") as HTMLButtonElement;
+wCancelOffer.addEventListener("click", () => { conn.cancelOffer(); wCancelOffer.style.display = "none"; });
 
 function refreshWallet(): void {
   wBal.textContent = conn.stats ? formatSats(conn.stats.sats) : "—";
@@ -314,7 +317,9 @@ offerBox.style.cssText =
   "color:#cdd6f4;font:14px/1.5 system-ui;z-index:200;box-shadow:0 8px 32px rgba(0,0,0,.5);text-align:center;";
 document.body.appendChild(offerBox);
 
+let pendingOfferId: string | null = null;
 conn.onOfferReceived = (o) => {
+  pendingOfferId = o.offerId;
   offerBox.innerHTML =
     `<div style="margin-bottom:10px"><b>${o.fromName}</b> offers <b style="color:#f9e2af">${formatSats(o.price)} sats</b> ` +
     `for your <b>${o.pieceType}</b>.<br>It will defect to them.</div>` +
@@ -322,11 +327,16 @@ conn.onOfferReceived = (o) => {
     `<button id="offer-yes" style="padding:6px 18px;background:#88ee66;color:#11151f;border:0;border-radius:6px;font-weight:700;cursor:pointer">Sell</button>` +
     `<button id="offer-no" style="padding:6px 18px;background:#ff5577;color:#fff;border:0;border-radius:6px;font-weight:700;cursor:pointer">Decline</button></div>`;
   offerBox.style.display = "block";
-  const close = (accept: boolean) => { offerBox.style.display = "none"; conn.respondOffer(o.offerId, accept); };
+  const close = (accept: boolean) => { offerBox.style.display = "none"; pendingOfferId = null; conn.respondOffer(o.offerId, accept); };
   document.getElementById("offer-yes")!.onclick = () => close(true);
   document.getElementById("offer-no")!.onclick = () => close(false);
 };
+conn.onOfferCancelled = (offerId) => {
+  // Buyer retracted (or it expired) — dismiss the seller's prompt if it matches.
+  if (pendingOfferId === offerId) { offerBox.style.display = "none"; pendingOfferId = null; }
+};
 conn.onOfferResolved = (r) => {
+  wCancelOffer.style.display = "none";
   wMsg.textContent = r.ok ? "Offer accepted — piece is yours ✓" : `Offer ${r.reason ?? "declined"}`;
   refreshWallet();
 };
@@ -466,6 +476,7 @@ async function handleClick(clientX: number, clientY: number): Promise<void> {
     if (!Number.isFinite(price) || price < 0) return;
     conn.buyOffer(pieceId, price);
     wMsg.textContent = `Offer sent (${formatSats(price)} sats) — waiting for owner…`;
+    wCancelOffer.style.display = "block";
   }
 }
 
