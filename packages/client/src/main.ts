@@ -844,6 +844,7 @@ function applyHeldKeys(deltaFrames: number): void {
 
 function renderHud(): void {
   if (!conn.self) return;
+  refreshWallet(); // keep wallet panel in sync with live balance
   let alive = 0;
   for (const p of conn.pieces.values()) if (p.owner === conn.self.armyId) alive++;
   const enemyCount = conn.roster.filter((a) => a.id !== conn.self!.armyId).length;
