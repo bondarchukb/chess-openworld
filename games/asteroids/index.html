@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Asteroids 3D</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #05060d; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; }
+  #app { position: fixed; inset: 0; }
+
+  #hud {
+    position: fixed; top: 16px; left: 16px; right: 16px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    pointer-events: none; color: #cfe8ff;
+    text-shadow: 0 0 8px rgba(80,160,255,.6);
+    font-variant-numeric: tabular-nums;
+  }
+  #hud .label { font-size: 12px; letter-spacing: 2px; opacity: .65; text-transform: uppercase; }
+  #hud .value { font-size: 26px; font-weight: 700; }
+  #lives { display: flex; gap: 6px; margin-top: 4px; }
+  #lives .ship { width: 14px; height: 18px;
+    clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 100%);
+    background: #62d2ff; box-shadow: 0 0 8px #62d2ff; }
+
+  #overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: radial-gradient(ellipse at center, rgba(10,14,30,.55), rgba(3,4,10,.92));
+    color: #eaf4ff; gap: 18px; backdrop-filter: blur(2px);
+  }
+  #overlay.hidden { display: none; }
+  #overlay h1 { font-size: clamp(36px, 8vw, 88px); font-weight: 800;
+    letter-spacing: 4px; background: linear-gradient(180deg,#9fe4ff,#5a8cff);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 0 40px rgba(90,140,255,.5); }
+  #overlay p { max-width: 460px; line-height: 1.6; opacity: .85; font-size: 15px; }
+  #overlay .keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px;
+    font-size: 14px; opacity: .8; text-align: left; }
+  #overlay kbd { background: rgba(120,170,255,.14); border: 1px solid rgba(140,180,255,.3);
+    border-radius: 6px; padding: 2px 9px; font-family: inherit; font-size: 13px; }
+  #overlay button {
+    pointer-events: auto; margin-top: 6px; cursor: pointer;
+    font: 700 18px/1 inherit; letter-spacing: 2px; color: #04101f;
+    padding: 14px 34px; border: none; border-radius: 999px;
+    background: linear-gradient(180deg,#a7e6ff,#4f9bff);
+    box-shadow: 0 6px 24px rgba(70,130,255,.5); transition: transform .12s ease;
+  }
+  #overlay button:hover { transform: translateY(-2px) scale(1.03); }
+  #overlay .final { font-size: 20px; opacity: 1; }
+  #overlay .final b { color: #9fe4ff; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud">
+    <div>
+      <div class="label">Score</div>
+      <div class="value" id="score">0</div>
+    </div>
+    <div style="text-align:center">
+      <div class="label">Wave</div>
+      <div class="value" id="wave">1</div>
+    </div>
+    <div style="text-align:right">
+      <div class="label">Ships</div>
+      <div id="lives"></div>
+    </div>
+  </div>
+
+  <div id="overlay">
+    <h1>ASTEROIDS 3D</h1>
+    <p>Blast the drifting rocks before they blast you. Big rocks split into
+       smaller, faster ones. Clear the wave to bring on the next.</p>
+    <div class="keys">
+      <kbd>← →</kbd><span>Rotate &nbsp;/&nbsp; <kbd>A</kbd> <kbd>D</kbd></span>
+      <kbd>↑</kbd><span>Thrust &nbsp;/&nbsp; <kbd>W</kbd></span>
+      <kbd>Space</kbd><span>Fire</span>
+      <kbd>H</kbd><span>Hyperspace (random jump)</span>
+    </div>
+    <button id="startBtn">LAUNCH</button>
+  </div>
+
+  <script type="importmap">
+  { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+  </script>
+
+  <script type="module">
+  import * as THREE from "three";
+
+  // ---------- World constants ----------
+  const BOUND = 60;            // half-size of the square playfield (x,z)
+  const SHIP_TURN = 3.2;       // rad/s
+  const SHIP_THRUST = 42;      // accel units/s^2
+  const SHIP_DRAG = 0.6;       // velocity damping factor/s
+  const SHIP_MAX = 38;         // max speed
+  const BULLET_SPEED = 70;
+  const BULLET_LIFE = 1.1;     // seconds
+  const FIRE_COOLDOWN = 0.18;
+  const INVULN_TIME = 2.5;     // after spawn
+
+  // ---------- Renderer / scene / camera ----------
+  const app = document.getElementById("app");
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  app.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x05060d, 0.0065);
+
+  const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1000);
+  camera.position.set(0, 95, 58);
+  camera.lookAt(0, 0, 0);
+
+  scene.add(new THREE.AmbientLight(0x4a5a80, 0.9));
+  const key = new THREE.DirectionalLight(0xbcd4ff, 1.1);
+  key.position.set(30, 60, 20); scene.add(key);
+  const rim = new THREE.PointLight(0x5a8cff, 0.8, 400); rim.position.set(0, 40, 0); scene.add(rim);
+
+  // ---------- Starfield ----------
+  (function makeStars() {
+    const N = 1400, pos = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      const r = 180 + Math.random() * 320;
+      const t = Math.random() * Math.PI * 2, p = Math.acos(2 * Math.random() - 1);
+      pos[i*3]   = r * Math.sin(p) * Math.cos(t);
+      pos[i*3+1] = -40 - Math.random() * 200;   // mostly below the play plane
+      pos[i*3+2] = r * Math.sin(p) * Math.sin(t);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    const m = new THREE.PointsMaterial({ color: 0x9fb8ff, size: 1.4, sizeAttenuation: true,
+      transparent: true, opacity: 0.9 });
+    scene.add(new THREE.Points(g, m));
+  })();
+
+  // ---------- Playfield boundary (subtle glowing ring/box) ----------
+  (function makeArena() {
+    const grid = new THREE.GridHelper(BOUND * 2, 24, 0x2a4a8a, 0x16284f);
+    grid.position.y = -1.5;
+    grid.material.transparent = true; grid.material.opacity = 0.35;
+    scene.add(grid);
+    const edge = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(BOUND*2, 6, BOUND*2)),
+      new THREE.LineBasicMaterial({ color: 0x3d6bd6, transparent: true, opacity: 0.4 }));
+    scene.add(edge);
+  })();
+
+  // ---------- Helpers ----------
+  const wrap = (v) => { if (v > BOUND) return v - BOUND*2; if (v < -BOUND) return v + BOUND*2; return v; };
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  // ---------- Ship ----------
+  function buildShip() {
+    const grp = new THREE.Group();
+    const bodyGeo = new THREE.ConeGeometry(1.5, 4.5, 4);
+    bodyGeo.rotateX(Math.PI / 2);              // point along +Z (forward)
+    const body = new THREE.Mesh(bodyGeo, new THREE.MeshStandardMaterial({
+      color: 0x6fd0ff, emissive: 0x1b3a66, metalness: 0.5, roughness: 0.3, flatShading: true }));
+    grp.add(body);
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(4, 0.3, 1.6),
+      new THREE.MeshStandardMaterial({ color: 0x3a86d6, emissive: 0x0c2244, flatShading: true }));
+    fin.position.z = -1.4; grp.add(fin);
+    // engine flame (toggled while thrusting)
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.9, 3, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffb14a, transparent: true, opacity: 0.95 }));
+    flame.geometry.rotateX(-Math.PI / 2);
+    flame.position.z = -3; flame.visible = false; grp.add(flame);
+    grp.userData.flame = flame;
+    return grp;
+  }
+  const ship = buildShip();
+  scene.add(ship);
+
+  const shipState = { vel: new THREE.Vector3(), heading: 0, invuln: 0, cooldown: 0 };
+
+  // ---------- Asteroids ----------
+  const asteroids = [];
+  function makeAsteroidGeo(radius) {
+    const geo = new THREE.IcosahedronGeometry(radius, 1);
+    const p = geo.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const n = 0.78 + Math.random() * 0.44;
+      p.setXYZ(i, p.getX(i)*n, p.getY(i)*n, p.getZ(i)*n);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
+  const ROCK_MAT = new THREE.MeshStandardMaterial({
+    color: 0x9a8c7a, emissive: 0x241c14, roughness: 0.95, metalness: 0.05, flatShading: true });
+
+  function spawnAsteroid(size, x, z, vx, vz) {
+    const radius = { 3: 6.5, 2: 4, 1: 2.3 }[size];
+    const mesh = new THREE.Mesh(makeAsteroidGeo(radius), ROCK_MAT);
+    mesh.position.set(x, 0, z);
+    const spin = new THREE.Vector3(rand(-1,1), rand(-1,1), rand(-1,1)).multiplyScalar(rand(0.3, 1.2));
+    asteroids.push({ mesh, size, radius,
+      vel: new THREE.Vector3(vx, 0, vz), spin });
+    scene.add(mesh);
+  }
+
+  function spawnWaveRing(count) {
+    for (let i = 0; i < count; i++) {
+      // spawn near the edges so they drift inward, away from center
+      const edge = Math.random() < 0.5;
+      const x = edge ? rand(-BOUND, BOUND) : (Math.random() < 0.5 ? -BOUND : BOUND) * rand(0.8, 1);
+      const z = edge ? (Math.random() < 0.5 ? -BOUND : BOUND) * rand(0.8, 1) : rand(-BOUND, BOUND);
+      const speed = rand(6, 13);
+      const ang = Math.atan2(-z, -x) + rand(-0.8, 0.8);   // roughly toward center
+      spawnAsteroid(3, x, z, Math.cos(ang)*speed, Math.sin(ang)*speed);
+    }
+  }
+
+  // ---------- Bullets ----------
+  const bullets = [];
+  const BULLET_GEO = new THREE.SphereGeometry(0.55, 8, 8);
+  const BULLET_MAT = new THREE.MeshBasicMaterial({ color: 0xfff1a8 });
+  function fire() {
+    if (shipState.cooldown > 0) return;
+    shipState.cooldown = FIRE_COOLDOWN;
+    const dir = new THREE.Vector3(Math.sin(shipState.heading), 0, Math.cos(shipState.heading));
+    const mesh = new THREE.Mesh(BULLET_GEO, BULLET_MAT);
+    mesh.position.copy(ship.position).addScaledVector(dir, 3);
+    bullets.push({ mesh, vel: dir.clone().multiplyScalar(BULLET_SPEED).add(shipState.vel), life: BULLET_LIFE });
+    scene.add(mesh);
+  }
+
+  // ---------- Particles (explosions / thrust sparks) ----------
+  const particles = [];
+  function burst(pos, color, count, spread) {
+    const geo = new THREE.BufferGeometry();
+    const arr = new Float32Array(count * 3);
+    const vels = [];
+    for (let i = 0; i < count; i++) {
+      arr[i*3] = pos.x; arr[i*3+1] = 0; arr[i*3+2] = pos.z;
+      vels.push(new THREE.Vector3(rand(-1,1), rand(-0.3,0.3), rand(-1,1)).normalize().multiplyScalar(rand(spread*0.3, spread)));
+    }
+    geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+    const mat = new THREE.PointsMaterial({ color, size: 1.6, transparent: true, opacity: 1 });
+    const pts = new THREE.Points(geo, mat);
+    scene.add(pts);
+    particles.push({ pts, vels, life: 0.9, max: 0.9 });
+  }
+
+  // ---------- Game state ----------
+  const ui = {
+    score: document.getElementById("score"),
+    wave: document.getElementById("wave"),
+    lives: document.getElementById("lives"),
+    overlay: document.getElementById("overlay"),
+  };
+  const state = { running: false, score: 0, wave: 1, lives: 3, over: false };
+
+  function renderLives() {
+    ui.lives.innerHTML = "";
+    for (let i = 0; i < state.lives; i++) {
+      const s = document.createElement("div"); s.className = "ship"; ui.lives.appendChild(s);
+    }
+  }
+  function addScore(n) { state.score += n; ui.score.textContent = state.score; }
+
+  function resetShip() {
+    ship.position.set(0, 0, 0);
+    shipState.vel.set(0, 0, 0);
+    shipState.heading = 0;
+    shipState.invuln = INVULN_TIME;
+    ship.visible = true;
+  }
+
+  function startGame() {
+    state.running = true; state.over = false;
+    state.score = 0; state.wave = 1; state.lives = 3;
+    ui.score.textContent = "0"; ui.wave.textContent = "1";
+    renderLives();
+    // clear field
+    for (const a of asteroids) scene.remove(a.mesh); asteroids.length = 0;
+    for (const b of bullets) scene.remove(b.mesh); bullets.length = 0;
+    for (const p of particles) scene.remove(p.pts); particles.length = 0;
+    resetShip();
+    spawnWaveRing(4);
+    ui.overlay.classList.add("hidden");
+  }
+
+  function nextWave() {
+    state.wave++; ui.wave.textContent = state.wave;
+    spawnWaveRing(3 + state.wave);
+  }
+
+  function loseLife() {
+    state.lives--; renderLives();
+    burst(ship.position, 0x6fd0ff, 90, 24);
+    if (state.lives <= 0) return gameOver();
+    resetShip();
+  }
+
+  function gameOver() {
+    state.running = false; state.over = true; ship.visible = false;
+    ui.overlay.innerHTML = `
+      <h1>GAME OVER</h1>
+      <p class="final">You reached <b>wave ${state.wave}</b> with a score of <b>${state.score}</b>.</p>
+      <button id="startBtn">PLAY AGAIN</button>`;
+    ui.overlay.classList.remove("hidden");
+    document.getElementById("startBtn").addEventListener("click", startGame);
+  }
+
+  function hyperspace() {
+    if (!state.running) return;
+    burst(ship.position, 0xbb88ff, 40, 18);
+    ship.position.set(rand(-BOUND*0.8, BOUND*0.8), 0, rand(-BOUND*0.8, BOUND*0.8));
+    shipState.vel.set(0,0,0);
+    shipState.invuln = Math.max(shipState.invuln, 0.8);
+  }
+
+  // ---------- Input ----------
+  const keys = new Set();
+  addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (["arrowup","arrowdown","arrowleft","arrowright"," "].includes(e.key.toLowerCase())) e.preventDefault();
+    if (k === " " && state.running) fire();
+    if (k === "h") hyperspace();
+    keys.add(k);
+  });
+  addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+  document.getElementById("startBtn").addEventListener("click", startGame);
+
+  addEventListener("resize", () => {
+    camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  // ---------- Collision ----------
+  function dist2(ax, az, bx, bz) { const dx = ax-bx, dz = az-bz; return dx*dx + dz*dz; }
+
+  function splitAsteroid(a, idx) {
+    burst(a.mesh.position, 0xffd9a0, 24 + a.size*14, 10 + a.size*4);
+    scene.remove(a.mesh);
+    asteroids.splice(idx, 1);
+    addScore({ 3: 20, 2: 50, 1: 100 }[a.size]);
+    if (a.size > 1) {
+      for (let i = 0; i < 2; i++) {
+        const ang = rand(0, Math.PI*2), sp = rand(10, 18);
+        spawnAsteroid(a.size - 1, a.mesh.position.x, a.mesh.position.z,
+          Math.cos(ang)*sp, Math.sin(ang)*sp);
+      }
+    }
+  }
+
+  // ---------- Main loop ----------
+  const clock = new THREE.Clock();
+  function tick() {
+    requestAnimationFrame(tick);
+    const dt = Math.min(clock.getDelta(), 0.05);
+
+    if (state.running) {
+      // --- ship control ---
+      if (keys.has("arrowleft") || keys.has("a")) shipState.heading += SHIP_TURN * dt;
+      if (keys.has("arrowright") || keys.has("d")) shipState.heading -= SHIP_TURN * dt;
+      const thrusting = keys.has("arrowup") || keys.has("w");
+      const dir = new THREE.Vector3(Math.sin(shipState.heading), 0, Math.cos(shipState.heading));
+      if (thrusting) {
+        shipState.vel.addScaledVector(dir, SHIP_THRUST * dt);
+        if (Math.random() < 0.6) burst(ship.position.clone().addScaledVector(dir, -3), 0xffaa44, 3, 6);
+      }
+      ship.userData.flame.visible = thrusting && Math.random() < 0.85;
+      // drag + clamp
+      shipState.vel.multiplyScalar(1 - SHIP_DRAG * dt);
+      if (shipState.vel.length() > SHIP_MAX) shipState.vel.setLength(SHIP_MAX);
+      ship.position.addScaledVector(shipState.vel, dt);
+      ship.position.x = wrap(ship.position.x); ship.position.z = wrap(ship.position.z);
+      ship.rotation.y = shipState.heading;
+
+      if (shipState.invuln > 0) {
+        shipState.invuln -= dt;
+        ship.visible = Math.floor(shipState.invuln * 12) % 2 === 0;  // blink
+      } else ship.visible = true;
+      if (shipState.cooldown > 0) shipState.cooldown -= dt;
+
+      // --- asteroids ---
+      for (const a of asteroids) {
+        a.mesh.position.addScaledVector(a.vel, dt);
+        a.mesh.position.x = wrap(a.mesh.position.x); a.mesh.position.z = wrap(a.mesh.position.z);
+        a.mesh.rotation.x += a.spin.x * dt; a.mesh.rotation.y += a.spin.y * dt; a.mesh.rotation.z += a.spin.z * dt;
+      }
+
+      // --- bullets ---
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.mesh.position.addScaledVector(b.vel, dt);
+        b.mesh.position.x = wrap(b.mesh.position.x); b.mesh.position.z = wrap(b.mesh.position.z);
+        b.life -= dt;
+        if (b.life <= 0) { scene.remove(b.mesh); bullets.splice(i, 1); continue; }
+        // bullet vs asteroid
+        for (let j = asteroids.length - 1; j >= 0; j--) {
+          const a = asteroids[j];
+          if (dist2(b.mesh.position.x, b.mesh.position.z, a.mesh.position.x, a.mesh.position.z) < (a.radius+0.6)**2) {
+            scene.remove(b.mesh); bullets.splice(i, 1);
+            splitAsteroid(a, j);
+            break;
+          }
+        }
+      }
+
+      // --- ship vs asteroid ---
+      if (shipState.invuln <= 0) {
+        for (let j = asteroids.length - 1; j >= 0; j--) {
+          const a = asteroids[j];
+          if (dist2(ship.position.x, ship.position.z, a.mesh.position.x, a.mesh.position.z) < (a.radius+1.5)**2) {
+            loseLife();
+            break;
+          }
+        }
+      }
+
+      // --- wave cleared ---
+      if (asteroids.length === 0) nextWave();
+    }
+
+    // --- particles (run even when paused so death burst plays) ---
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      const pos = p.pts.geometry.attributes.position;
+      for (let k = 0; k < p.vels.length; k++) {
+        pos.setXYZ(k, pos.getX(k)+p.vels[k].x*dt, pos.getY(k)+p.vels[k].y*dt, pos.getZ(k)+p.vels[k].z*dt);
+      }
+      pos.needsUpdate = true;
+      p.pts.material.opacity = Math.max(0, p.life / p.max);
+      if (p.life <= 0) { scene.remove(p.pts); particles.splice(i, 1); }
+    }
+
+    renderer.render(scene, camera);
+  }
+  tick();
+  </script>
+</body>
+</html>
