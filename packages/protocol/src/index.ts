@@ -119,7 +119,7 @@ export interface PlayerStats {
   losses: number;
   kills: number;
   deaths: number;
-  /** Lightning sats. Starter grant 10,000. Earn on kill, lose on death. */
+  /** Lightning sats. Starts at 0 (deposit-only). Earn on kill, lose on death. */
   sats: number;
 }
 

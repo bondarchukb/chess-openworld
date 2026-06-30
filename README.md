@@ -18,12 +18,17 @@ data-driven rules engine and an isometric web client.
   A custodial pool wallet + an internal ledger with idempotency and a solvency
   invariant (the house never pays out more than it took in).
 - **Buy your opponent's pieces** — make a sat **offer** on any enemy piece; the
-  owner accepts or declines. On accept the piece *defects* to you and the sats
-  move buyer → seller. (Kings can't be bought.)
+  owner accepts or declines (and the buyer can cancel a pending offer). On accept
+  the piece *defects* to you and the sats move buyer → seller. (Kings can't be bought.)
 - **Domination mode** — a bounded arena battle royale: last army standing in the
   ring wins the whole sat pot. Coexists with open casual roaming in one world.
 - **Data-driven pieces** — pieces are data (`rides` + `hops`), not hardcoded
   logic. A custom "amazon" (queen + knight) is a few lines, no engine changes.
+  Pieces also carry a facing direction (`reorient`), since moves are directional.
+- **Spectator mode** — join `asSpectator` to watch the world without an army.
+- **Two spawn modes** — `classical` (standard back-rank army) or `blob`.
+- **Player progression** — per-account stats: ELO (starts 1000), wins/losses,
+  kills/deaths, plus a respawn flow after your king falls.
 
 ## Layout
 
@@ -40,6 +45,36 @@ paywall-shop/ Standalone Next.js Lightning checkout (coinos LNURL-pay reference)
 The four MMO seams: authoritative server (clients send intents, server owns all
 state), zone spatial partitioning, per-tick interest management (enter/leave/move
 deltas), and persistence (world + stats + ledger to disk).
+
+## Economy (all values in sats)
+
+Each piece type has one value that is **both** its spawn cost **and** its kill
+bounty — capturing a piece pays the captured piece's value from victim → killer
+(`PIECE_SATS`):
+
+| Piece  | Sats  |
+|--------|-------|
+| Pawn   | 100   |
+| Knight | 300   |
+| Bishop | 300   |
+| Rook   | 500   |
+| Queen  | 900   |
+| King   | 2,500 |
+
+- **Spawn an army** (8P 2N 2B 2R 1Q 1K) costs **6,400 sats** up front (`ARMY_SATS_COST`).
+- **Starting balance is 0** — deposit-only. New players hold no sats until they
+  top up (`STARTING_SATS = 0`); there is no free grant.
+- **Capture a king = jackpot**: the loser's entire balance plus the king's 2,500
+  transfers to the winner.
+- **Domination ante**: a fixed **5,000-sat** buy-in per player into the match pot
+  (`ENTRY_STAKE`); last army standing takes the whole pot.
+- **Deposit**: 1 – 10,000,000 sats per invoice. Mock auto-settles in ~2.5s; the
+  real provider polls coinos for settlement for up to 10 min.
+- **Cash out**: withdraw any amount ≥ 1 sat to a `user@domain` Lightning address,
+  capped by the pool **solvency invariant** — the house never pays out more than
+  it took in.
+- **Ledger**: every `deposit`/`withdraw`/`refund`/piece-buy is recorded
+  idempotently; balances and stats persist to disk.
 
 ## Run it
 
@@ -64,7 +99,8 @@ npm test           # engine unit tests + integration
 **WASD / arrows** walk · **drag** pan · **scroll** zoom · **C** recenter ·
 **Enter** take a seat at the board · **click** your piece then a square to move ·
 **click an enemy piece** to make a buy offer · wallet panel (bottom-right) to
-**Top Up** / **Cash Out**.
+**Top Up** / **Cash Out**. Pieces face a direction (reorient on move); you can
+also join as a **spectator** to watch without spawning.
 
 ## Money: mock vs. real
 
