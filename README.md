@@ -39,7 +39,6 @@ packages/
   server/     Authoritative zoned world: interest mgmt, tick sim, payments, ledger.
   client/     Isometric (2.5D) PixiJS web client + wallet UI.
   bots/       Autonomous players for load + play-testing.
-paywall-shop/ Standalone Next.js Lightning checkout (coinos LNURL-pay reference).
 ```
 
 The four MMO seams: authoritative server (clients send intents, server owns all
@@ -139,4 +138,3 @@ confirms settlement, and pays withdrawals to Lightning addresses
 - **Real Lightning path is implemented but exercised only via the mock provider**
   in testing; a real testnet deposit/withdraw still needs a live token run.
 - Invoices show a QR + bolt11; no WebLN one-click pay.
-- `paywall-shop` is a separate app, not wired into the game.
